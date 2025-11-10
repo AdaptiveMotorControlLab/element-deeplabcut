@@ -297,6 +297,125 @@ class BodyPart(dj.Lookup):
 
 
 @schema
+class PretrainedModel(dj.Lookup):
+    """Pretrained DeepLabCut models available for use.
+
+    Attributes:
+        pretrained_model_name ( varchar(64) ): Name of the pretrained model (e.g., "superanimal_quadruped").
+        version ( varchar(32) ): Optional. Version of the pretrained model.
+        species ( varchar(64) ): Optional. Species this model was trained on.
+        source ( varchar(128) ): Source of the pretrained model (e.g., "DLC Model Zoo",
+            "SuperAnimal", "ResNet", etc.).
+        backbone_model_name ( varchar(64) ): Optional. Backbone model name (e.g., "hrnet_w32").
+        detector_name ( varchar(128) ): Optional. Detector name (e.g., "fasterrcnn_resnet50_fpn_v2").
+        default_params (longblob): Optional. Default inference parameters (dict-like, e.g.,
+            {"video_adapt": False, "scale": 0.4, "batchsize": 8}).
+        weights_path ( varchar(255) ): Optional. Path to model weights file/URI (if applicable).
+        description ( varchar(1000) ): Optional. Description of the pretrained model.
+    """
+
+    definition = """
+    pretrained_model_name : varchar(64)  # Name of the pretrained model (e.g., "superanimal_quadruped")
+    ---
+    version=''            : varchar(32)  # Version of the pretrained model
+    species=''            : varchar(64)   # Species this model was trained on
+    source=''             : varchar(128)  # Source (e.g., "DLC Model Zoo", "SuperAnimal", "ResNet")
+    backbone_model_name='' : varchar(64)  # Optional. Backbone model name (e.g., "hrnet_w32")
+    detector_name=''       : varchar(128) # Optional. Detector name (e.g., "fasterrcnn_resnet50_fpn_v2")
+    default_params=null   : longblob      # Optional. Default inference parameters (dict-like)
+    weights_path=''       : varchar(255)  # Optional. Path to model weights file (if applicable)
+    description=''        : varchar(1000) # Description of the pretrained model
+    """
+
+    @classmethod
+    def is_pretrained(cls, pretrained_model_name: str) -> bool:
+        """Check if a pretrained model name exists in the lookup table.
+        
+        Args:
+            pretrained_model_name: Name of the pretrained model to check.
+            
+        Returns:
+            bool: True if the model exists in the lookup table, False otherwise.
+        """
+        return bool(cls & {"pretrained_model_name": pretrained_model_name})
+
+    @classmethod
+    def add(
+        cls,
+        pretrained_model_name: str,
+        source: str = "",
+        version: str = "",
+        species: str = "",
+        backbone_model_name: str = "",
+        detector_name: str = "",
+        weights_path: str = "",
+        default_params: dict = None,
+        description: str = "",
+        auto_insert: bool = False,
+    ):
+        """Add a pretrained model to the lookup table.
+        
+        If the model doesn't exist and auto_insert is True, it will be added
+        with the provided parameters. If auto_insert is False and the model
+        doesn't exist, raises a ValueError.
+        
+        Args:
+            pretrained_model_name: Name of the pretrained model (e.g., "superanimal_quadruped").
+            source: Optional. Source of the pretrained model.
+            version: Optional. Version of the pretrained model.
+            species: Optional. Species this model was trained on.
+            backbone_model_name: Optional. Backbone model name (e.g., "hrnet_w32").
+            detector_name: Optional. Detector name (e.g., "fasterrcnn_resnet50_fpn_v2").
+            weights_path: Optional. Path to model weights file/URI (if applicable).
+            default_params: Optional. Default inference parameters (dict-like, e.g.,
+                {"video_adapt": False, "scale": 0.4, "batchsize": 8}).
+            description: Optional. Description of the pretrained model.
+            auto_insert: If True, automatically insert if missing. If False, raise error.
+                Default False to force explicit registration.
+            
+        Returns:
+            bool: True if model exists (or was inserted). This is a success flag only.
+            
+        Raises:
+            ValueError: If model doesn't exist and auto_insert=False.
+        """
+        if cls.is_pretrained(pretrained_model_name):
+            return True
+        
+        if not auto_insert:
+            raise ValueError(
+                f"Pretrained model '{pretrained_model_name}' not found in "
+                "PretrainedModel lookup table. Use auto_insert=True to add it automatically, "
+                "or register it explicitly using PretrainedModel.insert1()."
+            )
+        
+        # Auto-insert with provided parameters
+        # Warn if auto-creating without meaningful configuration
+        if not weights_path and not default_params:
+            logger.warning(
+                f"Auto-inserting pretrained model '{pretrained_model_name}' without "
+                "weights_path or default_params. Consider registering explicitly with "
+                "proper configuration."
+            )
+        
+        cls.insert1(
+            {
+                "pretrained_model_name": pretrained_model_name,
+                "version": version,
+                "species": species,
+                "source": source,
+                "backbone_model_name": backbone_model_name,
+                "detector_name": detector_name,
+                "weights_path": weights_path,
+                "default_params": default_params,
+                "description": description,
+            },
+            skip_duplicates=True,
+        )
+        return True
+
+
+@schema
 class Model(dj.Manual):
     """DeepLabCut Models applied to generate pose estimations.
 
@@ -437,7 +556,7 @@ class Model(dj.Manual):
                 modelprefix=model_prefix,
             )
         else:
-            raise ValueError(f"Unknow engine type {engine}")
+            raise ValueError(f"Unknown engine type {engine}")
 
         if dlc_config["snapshotindex"] == -1:
             dlc_scorer = "".join(dlc_scorer.split("_")[:-1])
@@ -483,6 +602,126 @@ class Model(dj.Manual):
             if BodyPart.extract_new_body_parts(dlc_config, verbose=False).size > 0:
                 BodyPart.insert_from_config(dlc_config, prompt=prompt)
             cls.BodyPart.insert((model_name, bp) for bp in dlc_config["bodyparts"])
+
+        # ____ Insert into table ----
+        if cls.connection.in_transaction:
+            _do_insert()
+        else:
+            with cls.connection.transaction:
+                _do_insert()
+
+    @classmethod
+    def insert_pretrained_model(
+        cls,
+        model_name: str,
+        pretrained_model_name: str,
+        *,
+        model_description="",
+        model_prefix="",
+        prompt=True,
+        config_overrides: dict = None,
+    ):
+        """Insert a pretrained model into the dlc.Model table.
+
+        This method can only be used if the pretrained_model_name exists in the
+        PretrainedModel lookup table. It handles config paths and training-related
+        columns differently (set to NULL / "pretrained" as appropriate).
+
+        Args:
+            model_name (str): User-friendly name for this model instance.
+            pretrained_model_name (str): Name from PretrainedModel lookup table.
+            model_description (str): Optional. Description of this model.
+            model_prefix (str): Optional. Filename prefix used across DLC project.
+            prompt (bool): Optional. Prompt the user with all info before inserting.
+            config_overrides (dict): Optional. Dict of config items to override defaults.
+        """
+        # Check if pretrained model exists in lookup - return if not found
+        if not PretrainedModel.is_pretrained(pretrained_model_name):
+            logger.warning(
+                f"Pretrained model '{pretrained_model_name}' not found in "
+                "PretrainedModel lookup table. Cannot insert model. "
+                "Please add it to PretrainedModel first."
+            )
+            return
+        
+        pretrained_info = (PretrainedModel & {"pretrained_model_name": pretrained_model_name}).fetch1()
+
+        # Load default config from pretrained model
+        default_params = pretrained_info.get("default_params") or {}
+        if config_overrides:
+            default_params.update(config_overrides)
+
+        # Build config template - use defaults from pretrained model
+        dlc_config = default_params.copy()
+        
+        # Set required fields for pretrained models
+        # For pretrained models, we use placeholder values for training-related fields
+        dlc_config.setdefault("Task", f"pretrained_{pretrained_model_name}")
+        dlc_config.setdefault("date", "pretrained")
+        dlc_config.setdefault("iteration", 0)
+        dlc_config.setdefault("snapshotindex", -1)
+        dlc_config.setdefault("TrainingFraction", [1.0])  # Placeholder
+        
+        engine = dlc_config.get("engine", "tensorflow")
+        if engine is None:
+            logger.warning(
+                "DLC engine not specified. Defaulting to TensorFlow."
+            )
+            engine = "tensorflow"
+
+        # For pretrained models, scorer is based on the pretrained model name
+        scorer = f"{pretrained_model_name}_pretrained"
+
+        # Mark as pretrained in config_template for detection
+        # Convention: _pretrained_model_name in config_template identifies pretrained models
+        # This allows detection without modifying the Model table schema
+        dlc_config["_is_pretrained"] = True
+        dlc_config["_pretrained_model_name"] = pretrained_model_name
+        
+        # Build model dict - set training-related fields appropriately
+        # For pretrained models: no project_path, minimal config_template
+        model_dict = {
+            "model_name": model_name,
+            "model_description": model_description,
+            "scorer": scorer,
+            "task": dlc_config["Task"],
+            "date": dlc_config["date"],
+            "iteration": dlc_config["iteration"],
+            "snapshotindex": dlc_config["snapshotindex"],
+            "shuffle": 0,  # Not applicable for pretrained
+            "trainingsetindex": 0,  # Not applicable for pretrained
+            "engine": engine,
+            "project_path": "",  # Empty for pretrained models
+            "model_prefix": model_prefix,
+            "paramset_idx": None,  # No training param set for pretrained
+            "config_template": dlc_config,
+        }
+
+        # -- prompt for confirmation --
+        if prompt:
+            print("--- Pretrained DLC Model specification to be inserted ---")
+            for k, v in model_dict.items():
+                if k != "config_template":
+                    print("\t{}: {}".format(k, v))
+                else:
+                    print("\t-- Template/Contents of config.yaml --")
+                    for k, v in model_dict["config_template"].items():
+                        print("\t\t{}: {}".format(k, v))
+
+        if (
+            prompt
+            and dj.utils.user_choice("Proceed with pretrained DLC model insert?") != "yes"
+        ):
+            print("Canceled insert.")
+            return
+
+        def _do_insert():
+            cls.insert1(model_dict)
+            # Extract body parts from config if available
+            if "bodyparts" in dlc_config:
+                if BodyPart.extract_new_body_parts(dlc_config, verbose=False).size > 0:
+                    BodyPart.insert_from_config(dlc_config, prompt=prompt)
+                cls.BodyPart.insert((model_name, bp) for bp in dlc_config["bodyparts"])
 
         # ____ Insert into table ----
         if cls.connection.in_transaction:
@@ -725,8 +964,215 @@ class PoseEstimation(dj.Computed):
         likelihood  : longblob
         """
 
+    @classmethod
+    def _do_pretrained_inference(
+        cls,
+        pretrained_model_name: str,
+        video_filepaths: list,
+        output_dir: Path,
+        inference_params: dict = None,
+    ):
+        """Run pretrained (SuperAnimal / Model Zoo) inference on videos.
+
+        This uses the PretrainedModel lookup as the single source of truth for:
+        - which pretrained model to call
+        - default inference parameters
+        - optional backbone/detector names, etc.
+
+        It supports DLC's `video_inference_superanimal` API when available,
+        and falls back to `video_inference` if exposed by the installed DLC version.
+
+        Args:
+            pretrained_model_name: Name of the pretrained model (e.g., "superanimal_quadruped").
+            video_filepaths: List of full paths to video files.
+            output_dir: Directory to save output files.
+            inference_params: Optional. Parameters for inference function (overrides defaults).
+        """
+        import inspect
+        import deeplabcut
+
+        # --- Fetch pretrained model metadata from lookup ---
+        try:
+            pm = (PretrainedModel & {"pretrained_model_name": pretrained_model_name}).fetch1()
+        except dj.DataJointError:
+            raise ValueError(
+                f"Pretrained model '{pretrained_model_name}' is not registered in PretrainedModel. "
+                "Please insert it before running pretrained inference."
+            )
+
+        default_params = pm.get("default_params") or {}
+        # Merge: explicit inference_params override defaults
+        merged_params = {**default_params, **(inference_params or {})}
+
+        # Get optional fields if they exist in the table
+        backbone_model_name = pm.get("backbone_model_name") or None
+        detector_name = pm.get("detector_name") or None
+
+        # Ensure output_dir exists and is a string for DLC
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        destfolder_str = str(output_dir)
+
+        # --- Prefer SuperAnimal-style API if available ---
+        if hasattr(deeplabcut, "video_inference_superanimal"):
+            inference_func = deeplabcut.video_inference_superanimal
+            sig = inspect.signature(inference_func)
+
+            # Base kwargs from merged_params, filtered by supported args
+            kwargs = {
+                k: v
+                for k, v in merged_params.items()
+                if k in sig.parameters
+            }
+
+            # Map known optional fields if accepted by the function
+            if "model_name" in sig.parameters and backbone_model_name:
+                kwargs.setdefault("model_name", backbone_model_name)
+            if "detector_name" in sig.parameters and detector_name:
+                kwargs.setdefault("detector_name", detector_name)
+            if "destfolder" in sig.parameters:
+                kwargs.setdefault("destfolder", destfolder_str)
+
+            # Call: video_inference_superanimal(video_list, superanimal_name, **kwargs)
+            return inference_func(
+                video_filepaths,
+                pretrained_model_name,
+                **kwargs,
+            )
+
+        # --- Fallback: generic video_inference API, if present ---
+        if hasattr(deeplabcut, "video_inference"):
+            inference_func = deeplabcut.video_inference
+            sig = inspect.signature(inference_func)
+
+            kwargs = {
+                k: v
+                for k, v in merged_params.items()
+                if k in sig.parameters
+            }
+
+            # Try to inject known fields if supported
+            if "model_name" in sig.parameters and backbone_model_name:
+                kwargs.setdefault("model_name", backbone_model_name)
+            if "detector_name" in sig.parameters and detector_name:
+                kwargs.setdefault("detector_name", detector_name)
+            if "destfolder" in sig.parameters:
+                kwargs.setdefault("destfolder", destfolder_str)
+
+            # Some versions may expect (videos, model_name, ...) or similar;
+            # we always pass video_filepaths as first arg and rely on kwargs for the rest.
+            return inference_func(
+                video_filepaths,
+                **kwargs,
+            )
+
+        # --- No compatible API found ---
+        raise NotImplementedError(
+            "No compatible pretrained inference function found in the installed DeepLabCut. "
+            "Expected `video_inference_superanimal` or `video_inference`."
+        )
+
+    @classmethod
+    def do_trained(
+        cls,
+        project_path: Path,
+        video_filepaths: list,
+        output_dir: Path,
+        dlc_config: dict,
+        dlc_model_: dict,
+        analyze_video_params: dict = None,
+    ):
+        """Run trained model inference on videos.
+        
+        Args:
+            project_path: Full path to the directory containing the trained model.
+            video_filepaths: List of full paths to video files.
+            output_dir: Directory to save output files.
+            dlc_config: DeepLabCut config dictionary.
+            dlc_model_: Model record dictionary.
+            analyze_video_params: Optional. Parameters for analyze_videos function.
+        """
+        import inspect
+        
+        # Validate project_path is not empty for trained models
+        if not project_path or str(project_path).strip() == "":
+            raise ValueError(
+                "project_path cannot be empty for trained models. "
+                "Trained models require a valid project directory path."
+            )
+        
+        if analyze_video_params is None:
+            analyze_video_params = {}
+        
+        engine = dlc_model_.get("engine")
+        if engine is None:
+            logger.warning(
+                "DLC engine not specified in config file. Defaulting to TensorFlow."
+            )
+            engine = "tensorflow"
+        if engine == "pytorch":
+            from deeplabcut.pose_estimation_pytorch import analyze_videos
+        elif engine == "tensorflow":
+            from deeplabcut.pose_estimation_tensorflow import analyze_videos
+        else:
+            raise ValueError(f"Unknown engine type {engine}")
+
+        # ---- Build and save DLC configuration (yaml) file ----
+        dlc_project_path = Path(project_path)
+        dlc_config["project_path"] = dlc_project_path.as_posix()
+
+        # ---- Special handling for "cropping" ----
+        # `analyze_videos` behavior:
+        #   i) if is None, use the "cropping" from the config file
+        #   ii) if defined, use the specified "cropping" values but not updating the config file
+        # new behavior: if defined as "False", overwrite "cropping" to False in config file
+        cropping = analyze_video_params.get("cropping", None)
+        if cropping is not None:
+            if cropping:
+                dlc_config["cropping"] = True
+                (
+                    dlc_config["x1"],
+                    dlc_config["x2"],
+                    dlc_config["y1"],
+                    dlc_config["y2"],
+                ) = cropping
+            else:  # cropping is False
+                dlc_config["cropping"] = False
+
+        # ---- Write config files ----
+        config_filename = f"dj_dlc_config_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}.yaml"
+        # To output dir: Important for loading/parsing output in datajoint
+        _ = dlc_reader.save_yaml(output_dir, dlc_config)
+        # To project dir: Required by DLC to run the analyze_videos
+        if dlc_project_path != output_dir:
+            config_filepath = dlc_reader.save_yaml(
+                dlc_project_path,
+                dlc_config,
+                filename=config_filename,
+            )
+        else:
+            config_filepath = output_dir / config_filename
+
+        # ---- Take valid parameters for analyze_videos ----
+        kwargs = {
+            k: v
+            for k, v in analyze_video_params.items()
+            if k in inspect.signature(analyze_videos).parameters
+        }
+
+        # ---- Trigger DLC prediction job ----
+        analyze_videos(
+            config=config_filepath,
+            videos=video_filepaths,
+            shuffle=dlc_model_["shuffle"],
+            trainingsetindex=dlc_model_["trainingsetindex"],
+            destfolder=output_dir,
+            modelprefix=dlc_model_.get("model_prefix", ""),
+            **kwargs,
+        )
+
     def make(self, key):
-        """.populate() method will launch training for each PoseEstimationTask"""
+        """.populate() method will launch pose estimation inference for each PoseEstimationTask"""
         # ID model and directories
         dlc_model_ = (Model & key).fetch1()
         task_mode, output_dir = (PoseEstimationTask & key).fetch1(
@@ -753,13 +1199,6 @@ class PoseEstimation(dj.Computed):
 
         # Trigger PoseEstimation
         if task_mode == "trigger":
-            # Triggering dlc for pose estimation required:
-            # - project_path: full path to the directory containing the trained model
-            # - video_filepaths: full paths to the video files for inference
-            # - analyze_video_params: optional parameters to analyze video
-            project_path = find_full_path(
-                get_dlc_root_data_dir(), dlc_model_["project_path"]
-            )
             video_relpaths = list((VideoRecording.File & key).fetch("file_path"))
             video_filepaths = [
                 find_full_path(get_dlc_root_data_dir(), fp).as_posix()
@@ -769,90 +1208,82 @@ class PoseEstimation(dj.Computed):
                 "pose_estimation_params"
             ) or {}
 
-            # expect a nested dictionary with "analyze_videos" params
-            # if not, assume "pose_estimation_params" as a flat dictionary that include relevant "analyze_videos" params
-            analyze_video_params = (
-                pose_estimation_params.get("analyze_videos") or pose_estimation_params
-            )
+            # Check if this is a pretrained model by looking in config_template
+            config_template = dlc_model_.get("config_template", {})
+            pretrained_model_name = config_template.get("_pretrained_model_name")
+            is_pretrained = pretrained_model_name is not None
 
-            @memoized_result(
-                uniqueness_dict={
-                    **analyze_video_params,
-                    "project_path": dlc_model_["project_path"],
-                    "shuffle": dlc_model_["shuffle"],
-                    "trainingsetindex": dlc_model_["trainingsetindex"],
-                    "video_filepaths": video_relpaths,
-                },
-                output_directory=output_dir,
-            )
-            def do_analyze_videos():
-                engine = dlc_model_.get("engine")
-                if engine is None:
-                    logger.warning(
-                        "DLC engine not specified in config file. Defaulting to TensorFlow."
+            # Handle pretrained models differently
+            if is_pretrained:
+                # Ensure the pretrained model exists in lookup - require explicit registration
+                if not PretrainedModel.is_pretrained(pretrained_model_name):
+                    raise ValueError(
+                        f"Pretrained model '{pretrained_model_name}' must be registered "
+                        "in PretrainedModel lookup table before use. "
+                        "Please add it using PretrainedModel.insert1() or PretrainedModel.add()."
                     )
-                    engine = "tensorflow"
-                if engine == "pytorch":
-                    from deeplabcut.pose_estimation_pytorch import analyze_videos
-                elif engine == "tensorflow":
-                    from deeplabcut.pose_estimation_tensorflow import analyze_videos
-                else:
-                    raise ValueError(f"Unknow engine type {engine}")
-
-                # ---- Build and save DLC configuration (yaml) file ----
-                dlc_config = dlc_model_["config_template"]
-                dlc_project_path = Path(project_path)
-                dlc_config["project_path"] = dlc_project_path.as_posix()
-
-                # ---- Special handling for "cropping" ----
-                # `analyze_videos` behavior:
-                #   i) if is None, use the "cropping" from the config file
-                #   ii) if defined, use the specified "cropping" values but not updating the config file
-                # new behavior: if defined as "False", overwrite "cropping" to False in config file
-                cropping = analyze_video_params.get("cropping", None)
-                if cropping is not None:
-                    if cropping:
-                        dlc_config["cropping"] = True
-                        (
-                            dlc_config["x1"],
-                            dlc_config["x2"],
-                            dlc_config["y1"],
-                            dlc_config["y2"],
-                        ) = cropping
-                    else:  # cropping is False
-                        dlc_config["cropping"] = False
-
-                # ---- Write config files ----
-                config_filename = f"dj_dlc_config_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M%S')}.yaml"
-                # To output dir: Important for loading/parsing output in datajoint
-                _ = dlc_reader.save_yaml(output_dir, dlc_config)
-                # To project dir: Required by DLC to run the analyze_videos
-                if dlc_project_path != output_dir:
-                    config_filepath = dlc_reader.save_yaml(
-                        dlc_project_path,
-                        dlc_config,
-                        filename=config_filename,
-                    )
-
-                # ---- Take valid parameters for analyze_videos ----
-                kwargs = {
-                    k: v
-                    for k, v in analyze_video_params.items()
-                    if k in inspect.signature(analyze_videos).parameters
-                }
-
-                # ---- Trigger DLC prediction job ----
-                analyze_videos(
-                    config=config_filepath,
-                    videos=video_filepaths,
-                    shuffle=dlc_model_["shuffle"],
-                    trainingsetindex=dlc_model_["trainingsetindex"],
-                    destfolder=output_dir,
-                    modelprefix=dlc_model_["model_prefix"],
-                    **kwargs,
+                
+                # Build inference_params from pose_estimation_params
+                # (default_params will be merged inside _do_pretrained_inference)
+                pose_inference_params = (
+                    pose_estimation_params.get("video_inference") or pose_estimation_params
                 )
 
-            do_analyze_videos()
+                @memoized_result(
+                    uniqueness_dict={
+                        **pose_inference_params,
+                        "pretrained_model_name": pretrained_model_name,
+                        "video_filepaths": video_relpaths,
+                    },
+                    output_directory=output_dir,
+                )
+                def _do_pretrained_inference():
+                    PoseEstimation._do_pretrained_inference(
+                        pretrained_model_name=pretrained_model_name,
+                        video_filepaths=video_filepaths,
+                        output_dir=output_dir,
+                        inference_params=pose_inference_params,
+                    )
+                
+                _do_pretrained_inference()
+            else:
+                # Original trained model path
+                # Triggering dlc for pose estimation required:
+                # - project_path: full path to the directory containing the trained model
+                # - video_filepaths: full paths to the video files for inference
+                # - analyze_video_params: optional parameters to analyze video
+                project_path = find_full_path(
+                    get_dlc_root_data_dir(), dlc_model_["project_path"]
+                )
+
+                # expect a nested dictionary with "analyze_videos" params
+                # if not, assume "pose_estimation_params" as a flat dictionary that include relevant "analyze_videos" params
+                analyze_video_params = (
+                    pose_estimation_params.get("analyze_videos") or pose_estimation_params
+                )
+
+                @memoized_result(
+                    uniqueness_dict={
+                        **analyze_video_params,
+                        "project_path": dlc_model_["project_path"],
+                        "shuffle": dlc_model_["shuffle"],
+                        "trainingsetindex": dlc_model_["trainingsetindex"],
+                        "video_filepaths": video_relpaths,
+                    },
+                    output_directory=output_dir,
+                )
+                def _do_trained_inference():
+                    dlc_config = dlc_model_["config_template"].copy()
+                    PoseEstimation.do_trained(
+                        project_path=project_path,
+                        video_filepaths=video_filepaths,
+                        output_dir=output_dir,
+                        dlc_config=dlc_config,
+                        dlc_model_=dlc_model_,
+                        analyze_video_params=analyze_video_params,
+                    )
+
+                _do_trained_inference()
 
         dlc_result = dlc_reader.PoseEstimation(output_dir)
         creation_time = datetime.fromtimestamp(dlc_result.creation_time).strftime(
