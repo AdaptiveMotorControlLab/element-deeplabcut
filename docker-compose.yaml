@@ -1,0 +1,64 @@
+# Docker Compose configuration for element-deeplabcut client environment
+# Usage: docker compose up --build
+#        docker compose run client python your_script.py
+
+version: "3.8"
+
+services:
+  # MySQL database service
+  db:
+    restart: always
+    image: datajoint/mysql:${MYSQL_VER:-8.0}
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DJ_PASS:-datajoint}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DJ_PASS:-datajoint}"]
+      timeout: 15s
+      retries: 10
+      interval: 15s
+    networks:
+      - element_network
+
+  # Client container
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DJ_HOST=db
+      - DJ_USER=root
+      - DJ_PASS=${DJ_PASS:-datajoint}
+      - DJ_PORT=3306
+      - DATABASE_PREFIX=${DATABASE_PREFIX:-}
+      - DLC_ROOT_DATA_DIR=${DLC_ROOT_DATA_DIR:-/app/test_videos}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount data directory (can be customized via DLC_DATA_DIR env var)
+      # Default: ./test_videos (for tests) or ./data (for general use)
+      - ${DLC_DATA_DIR:-./test_videos}:/app/data
+      # Mount config file if it exists
+      - ./dj_local_conf.json:/app/dj_local_conf.json:ro
+      # Mount the project directory for development
+      - .:/app
+    networks:
+      - element_network
+    # Default command - interactive bash (entrypoint is /bin/bash)
+    # Example: docker compose run client -c "python test_trained_inference.py"
+    command: ["-i"]
+    stdin_open: true
+    tty: true
+
+volumes:
+  db_data:
+
+networks:
+  element_network:
+    driver: bridge
+
