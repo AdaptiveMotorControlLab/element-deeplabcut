@@ -74,12 +74,15 @@ Development of the Element began with an
 by the Mathis team. We further identified common needs across our respective
 partnerships to offer the following features for single-camera 2D models:
 
-- Manage training data and configuration parameters
-- Launch model training
+- Support for both **trained models** (custom models you train) and **pretrained models** (ready-to-use models from the DLC Model Zoo)
+- Manage training data and configuration parameters (for trained models)
+- Launch model training (for trained models)
 - Evaluate models automatically and directly compare models
 - Manage model metadata
 - Launch inference video analysis
 - Capture pose estimation output for each session
+
+See the [Workflows page](./workflows.md) for details on the two workflow modes.
 
 ## Element Architecture
 
