@@ -21,6 +21,7 @@ setup(
     license="MIT",
     url=f'https://github.com/datajoint/{pkg_name.replace("_", "-")}',
     keywords="neuroscience behavior deeplabcut pose-estimation science datajoint",
+    python_requires=">=3.10",  # DeepLabCut 3.x requires Python 3.10+
     packages=find_packages(exclude=["contrib", "docs", "tests*"]),
     scripts=[],
     install_requires=[
@@ -32,16 +33,16 @@ setup(
     ],
     extras_require={
         "dlc_default": [
-            "deeplabcut[tf] @ git+https://github.com/DeepLabCut/DeepLabCut.git"
+            "deeplabcut[superanimal]==3.0.0rc13"
         ],
         "dlc_apple_mchips": [
             "tensorflow-macos==2.12.0",
             "tensorflow-metal",
             "tables==3.7.0",
-            "deeplabcut",
+            "deeplabcut[superanimal]==3.0.0rc13",
         ],
         "dlc_gui": [
-            "deeplabcut[gui] @ git+https://github.com/DeepLabCut/DeepLabCut.git"
+            "deeplabcut[gui]==3.0.0rc13"
         ],
         "elements": [
             "element-lab @ git+https://github.com/datajoint/element-lab.git",

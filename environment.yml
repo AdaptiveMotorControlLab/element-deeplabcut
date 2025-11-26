@@ -1,0 +1,25 @@
+name: element-deeplabcut
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10  # DeepLabCut 3.x requires Python 3.10+ (uses modern type hints)
+  - pip
+  - graphviz
+  - ffmpeg
+  - pip:
+    - datajoint>=0.14.0
+    - pydot
+    - ipykernel
+    - ipywidgets
+    - pytest
+    - pytest-cov
+    - opencv-python  # Required for video metadata extraction
+    - element-lab @ git+https://github.com/datajoint/element-lab.git
+    - element-animal @ git+https://github.com/datajoint/element-animal.git
+    - element-session @ git+https://github.com/datajoint/element-session.git
+    - element-interface @ git+https://github.com/datajoint/element-interface.git
+    # DeepLabCut for inference (optional - comment out if not needed)
+    - deeplabcut[superanimal]==3.0.0rc13  # For pretrained SuperAnimal models and inference (DLC 3.x)
+    # Alternative: - deeplabcut[tf] @ git+https://github.com/DeepLabCut/DeepLabCut.git  # For TensorFlow backend only
+
