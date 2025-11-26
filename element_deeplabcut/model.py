@@ -85,12 +85,18 @@ def get_dlc_root_data_dir() -> list:
     string or list of strings for possible root data directories.
     """
     root_directories = _linking_module.get_dlc_root_data_dir()
+    
+    # Handle None case
+    if root_directories is None:
+        return []
+    
     if isinstance(root_directories, (str, Path)):
         root_directories = [root_directories]
 
     if (
         hasattr(_linking_module, "get_dlc_processed_data_dir")
-        and get_dlc_processed_data_dir() not in root_directories
+        and _linking_module.get_dlc_processed_data_dir() is not None
+        and _linking_module.get_dlc_processed_data_dir() not in root_directories
     ):
         root_directories.append(_linking_module.get_dlc_processed_data_dir())
 
@@ -195,8 +201,18 @@ class RecordingInfo(dj.Imported):
                 int(cap.get(cv2.CAP_PROP_FPS)),
             )
             if px_height is not None:
-                assert (px_height, px_width, fps) == info
-            px_height, px_width, fps = info
+                # Allow different dimensions, but warn if they differ
+                if (px_height, px_width, fps) != info:
+                    logger.warning(
+                        f"Video files in recording have different properties. "
+                        f"First video: {px_width}x{px_height} @ {fps} fps, "
+                        f"Current video ({Path(file_path).name}): {info[1]}x{info[0]} @ {info[2]} fps. "
+                        f"Using first video's properties for metadata."
+                    )
+                # Use first video's properties, but still count frames from all videos
+            else:
+                # First video - set as reference
+                px_height, px_width, fps = info
             nframes += int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             cap.release()
 
@@ -251,8 +267,8 @@ class BodyPart(dj.Lookup):
         tracked_body_parts = cls.fetch("body_part")
         new_body_parts = np.setdiff1d(dlc_config["bodyparts"], tracked_body_parts)
         if verbose:  # Added to silence duplicate prompt during `insert_new_model`
-            print(f"Existing body parts: {tracked_body_parts}")
-            print(f"New body parts: {new_body_parts}")
+            logger.info(f"Existing body parts: {tracked_body_parts}")
+            logger.info(f"New body parts: {new_body_parts}")
         return new_body_parts
 
     @classmethod
@@ -275,7 +291,7 @@ class BodyPart(dj.Lookup):
                     "Descriptions list does not match "
                     + " the number of new_body_parts"
                 )
-                print(f"New descriptions: {descriptions}")
+                logger.info(f"New descriptions: {descriptions}")
             if descriptions is None:
                 descriptions = ["" for x in range(len(new_body_parts))]
 
@@ -286,7 +302,7 @@ class BodyPart(dj.Lookup):
                 )
                 != "yes"
             ):
-                print("Canceled insert.")
+                logger.info("Canceled insert.")
                 return
             cls.insert(
                 [
@@ -351,17 +367,17 @@ class PretrainedModel(dj.Lookup):
         weights_path: str = "",
         default_params: dict = None,
         description: str = "",
-        auto_insert: bool = False,
     ):
-        """Add a pretrained model to the lookup table.
+        """Register a pretrained model in the lookup table.
         
-        If the model doesn't exist and auto_insert is True, it will be added
-        with the provided parameters. If auto_insert is False and the model
-        doesn't exist, raises a ValueError.
+        This is a convenience method that inserts a pretrained model if it doesn't
+        already exist. For Lookup tables, models should be explicitly registered
+        with proper configuration.
         
         Args:
             pretrained_model_name: Name of the pretrained model (e.g., "superanimal_quadruped").
-            source: Optional. Source of the pretrained model.
+            source: Source of the pretrained model (e.g., "SuperAnimal", "DLC Model Zoo").
+                Recommended for proper model identification.
             version: Optional. Version of the pretrained model.
             species: Optional. Species this model was trained on.
             backbone_model_name: Optional. Backbone model name (e.g., "hrnet_w32").
@@ -370,32 +386,23 @@ class PretrainedModel(dj.Lookup):
             default_params: Optional. Default inference parameters (dict-like, e.g.,
                 {"video_adapt": False, "scale": 0.4, "batchsize": 8}).
             description: Optional. Description of the pretrained model.
-            auto_insert: If True, automatically insert if missing. If False, raise error.
-                Default False to force explicit registration.
             
         Returns:
-            bool: True if model exists (or was inserted). This is a success flag only.
+            bool: True if model exists or was successfully inserted.
             
         Raises:
-            ValueError: If model doesn't exist and auto_insert=False.
+            ValueError: If model doesn't exist and essential information is missing.
         """
         if cls.is_pretrained(pretrained_model_name):
             return True
         
-        if not auto_insert:
+        # Validate that essential information is provided
+        # At minimum, should have source or default_params for meaningful registration
+        if not source and not default_params and not weights_path:
             raise ValueError(
-                f"Pretrained model '{pretrained_model_name}' not found in "
-                "PretrainedModel lookup table. Use auto_insert=True to add it automatically, "
-                "or register it explicitly using PretrainedModel.insert1()."
-            )
-        
-        # Auto-insert with provided parameters
-        # Warn if auto-creating without meaningful configuration
-        if not weights_path and not default_params:
-            logger.warning(
-                f"Auto-inserting pretrained model '{pretrained_model_name}' without "
-                "weights_path or default_params. Consider registering explicitly with "
-                "proper configuration."
+                f"Cannot register pretrained model '{pretrained_model_name}' without "
+                "essential information. Please provide at least one of: "
+                "source, default_params, or weights_path."
             )
         
         cls.insert1(
@@ -413,6 +420,94 @@ class PretrainedModel(dj.Lookup):
             skip_duplicates=True,
         )
         return True
+
+    @classmethod
+    def populate_common_models(cls, models: list = None):
+        """Populate the lookup table with common pretrained models.
+        
+        This method registers well-known pretrained models (e.g., SuperAnimal models)
+        with their default configurations. Models are only inserted if they don't
+        already exist in the table.
+        
+        Args:
+            models: Optional. List of model names to populate. If None, populates all
+                common models. Valid options: "superanimal_quadruped", "superanimal_topviewmouse".
+                
+        Returns:
+            dict: Summary of registration results with keys 'inserted', 'skipped', 'failed'.
+        """
+        # Define common models with their configurations
+        # Only include models that are valid SuperAnimal identifiers in DeepLabCut
+        common_models = {
+            "superanimal_quadruped": {
+                "pretrained_model_name": "superanimal_quadruped",
+                "source": "SuperAnimal",
+                "version": "1.0",
+                "species": "quadruped",
+                "backbone_model_name": "hrnet_w32",
+                "detector_name": "fasterrcnn_resnet50_fpn_v2",
+                "default_params": {
+                    "video_adapt": False,
+                    "scale": 0.4,
+                    "batchsize": 8,
+                },
+                "description": "SuperAnimal model for quadruped animals (mice, rats, etc.)",
+            },
+            "superanimal_topviewmouse": {
+                "pretrained_model_name": "superanimal_topviewmouse",
+                "source": "SuperAnimal",
+                "version": "1.0",
+                "species": "mouse",
+                "backbone_model_name": "hrnet_w32",
+                "detector_name": "fasterrcnn_resnet50_fpn_v2",
+                "default_params": {
+                    "video_adapt": False,
+                    "scale": 0.4,
+                    "batchsize": 8,
+                },
+                "description": "SuperAnimal model for top-view mouse pose estimation",
+            },
+        }
+        
+        # Determine which models to populate
+        if models is None:
+            models_to_populate = list(common_models.keys())
+        else:
+            models_to_populate = models if isinstance(models, list) else [models]
+        
+        # Validate model names
+        invalid_models = [m for m in models_to_populate if m not in common_models]
+        if invalid_models:
+            raise ValueError(
+                f"Unknown model names: {invalid_models}. "
+                f"Valid options: {list(common_models.keys())}"
+            )
+        
+        # Register models
+        results = {"inserted": [], "skipped": [], "failed": []}
+        
+        for model_name in models_to_populate:
+            model_config = common_models[model_name]
+            
+            try:
+                if cls.is_pretrained(model_name):
+                    results["skipped"].append(model_name)
+                    logger.info(f"Model '{model_name}' already exists, skipping.")
+                else:
+                    cls.insert1(model_config, skip_duplicates=True)
+                    results["inserted"].append(model_name)
+                    logger.info(f"Registered pretrained model: '{model_name}'")
+            except Exception as e:
+                results["failed"].append((model_name, str(e)))
+                logger.error(f"Failed to register '{model_name}': {e}")
+        
+        # Log summary
+        logger.info(
+            f"Populate summary: {len(results['inserted'])} inserted, "
+            f"{len(results['skipped'])} skipped, {len(results['failed'])} failed"
+        )
+        
+        return results
 
 
 @schema
@@ -496,7 +591,7 @@ class Model(dj.Manual):
             model_description (str): Optional. Description of this model.
             model_prefix (str): Optional. Filename prefix used across DLC project
             paramset_idx (int): Optional. Index from the TrainingParamSet table
-            prompt (bool): Optional. Prompt the user with all info before inserting.
+            prompt (bool): Optional, default True. Prompt the user with all info before inserting.
             params (dict): Optional. If dlc_config is path, dict of override items
         """
         # handle dlc_config being a yaml file
@@ -580,20 +675,20 @@ class Model(dj.Manual):
 
         # -- prompt for confirmation --
         if prompt:
-            print("--- DLC Model specification to be inserted ---")
+            logger.info("--- DLC Model specification to be inserted ---")
             for k, v in model_dict.items():
                 if k != "config_template":
-                    print("\t{}: {}".format(k, v))
+                    logger.info("\t{}: {}".format(k, v))
                 else:
-                    print("\t-- Template/Contents of config.yaml --")
+                    logger.info("\t-- Template/Contents of config.yaml --")
                     for k, v in model_dict["config_template"].items():
-                        print("\t\t{}: {}".format(k, v))
+                        logger.info("\t\t{}: {}".format(k, v))
 
         if (
             prompt
             and dj.utils.user_choice("Proceed with new DLC model insert?") != "yes"
         ):
-            print("Canceled insert.")
+            logger.info("Canceled insert.")
             return
 
         def _do_insert():
@@ -632,7 +727,7 @@ class Model(dj.Manual):
             pretrained_model_name (str): Name from PretrainedModel lookup table.
             model_description (str): Optional. Description of this model.
             model_prefix (str): Optional. Filename prefix used across DLC project.
-            prompt (bool): Optional. Prompt the user with all info before inserting.
+            prompt (bool): Optional, default True. Prompt the user with all info before inserting.
             config_overrides (dict): Optional. Dict of config items to override defaults.
         """
         # Check if pretrained model exists in lookup - return if not found
@@ -656,18 +751,27 @@ class Model(dj.Manual):
         
         # Set required fields for pretrained models
         # For pretrained models, we use placeholder values for training-related fields
-        dlc_config.setdefault("Task", f"pretrained_{pretrained_model_name}")
+        # Include model_name in task to ensure uniqueness across different model instances
+        # This prevents duplicate key errors when inserting multiple instances of the same pretrained model
+        # Task field is varchar(32), so we need to keep it short
+        # Use a hash or shortened version of model_name to ensure uniqueness while staying within limit
+        import hashlib
+        model_name_hash = hashlib.md5(model_name.encode()).hexdigest()[:8]  # First 8 chars of hash
+        task_value = f"pt_{pretrained_model_name[:10]}_{model_name_hash}"  # Keep under 32 chars
+        # Ensure it's exactly 32 chars or less
+        task_value = task_value[:32]
+        dlc_config.setdefault("Task", task_value)
         dlc_config.setdefault("date", "pretrained")
         dlc_config.setdefault("iteration", 0)
         dlc_config.setdefault("snapshotindex", -1)
         dlc_config.setdefault("TrainingFraction", [1.0])  # Placeholder
         
-        engine = dlc_config.get("engine", "tensorflow")
+        engine = dlc_config.get("engine", "pytorch")
         if engine is None:
             logger.warning(
-                "DLC engine not specified. Defaulting to TensorFlow."
+                "DLC engine not specified. Defaulting to PyTorch."
             )
-            engine = "tensorflow"
+            engine = "pytorch"
 
         # For pretrained models, scorer is based on the pretrained model name
         scorer = f"{pretrained_model_name}_pretrained"
@@ -699,20 +803,20 @@ class Model(dj.Manual):
 
         # -- prompt for confirmation --
         if prompt:
-            print("--- Pretrained DLC Model specification to be inserted ---")
+            logger.info("--- Pretrained DLC Model specification to be inserted ---")
             for k, v in model_dict.items():
                 if k != "config_template":
-                    print("\t{}: {}".format(k, v))
+                    logger.info("\t{}: {}".format(k, v))
                 else:
-                    print("\t-- Template/Contents of config.yaml --")
+                    logger.info("\t-- Template/Contents of config.yaml --")
                     for k, v in model_dict["config_template"].items():
-                        print("\t\t{}: {}".format(k, v))
+                        logger.info("\t\t{}: {}".format(k, v))
 
         if (
             prompt
             and dj.utils.user_choice("Proceed with pretrained DLC model insert?") != "yes"
         ):
-            print("Canceled insert.")
+            logger.info("Canceled insert.")
             return
 
         def _do_insert():
@@ -847,11 +951,34 @@ class PoseEstimationTask(dj.Manual):
             relative (bool): Report directory relative to get_dlc_processed_data_dir().
             mkdir (bool): Default False. Make directory if it doesn't exist.
         """
+        root_dirs = get_dlc_root_data_dir()
+        if not root_dirs:
+            raise ValueError(
+                "DLC_ROOT_DATA_DIR is not configured. "
+                "Please set DLC_ROOT_DATA_DIR environment variable or configure it in dj_local_conf.json"
+            )
+        
         video_filepath = find_full_path(
-            get_dlc_root_data_dir(),
+            root_dirs,
             (VideoRecording.File & key).fetch("file_path", limit=1)[0],
         )
-        root_dir = find_root_directory(get_dlc_root_data_dir(), video_filepath.parent)
+        
+        # Ensure video_filepath is an absolute Path
+        video_filepath = Path(video_filepath).resolve()
+        
+        # Handle case where video is directly in root directory
+        video_parent = video_filepath.parent
+        root_dir = None
+        # Check if parent is one of the root directories
+        for root in root_dirs:
+            root_path = Path(root).resolve()
+            if video_parent == root_path:
+                root_dir = root_path
+                break
+        
+        # If not found, use find_root_directory (for nested paths)
+        if root_dir is None:
+            root_dir = Path(find_root_directory(root_dirs, video_filepath.parent)).resolve()
         recording_key = VideoRecording & key
         device = "-".join(
             str(v)
@@ -896,20 +1023,78 @@ class PoseEstimationTask(dj.Manual):
                 videotype, gputouse, save_as_csv, batchsize, cropping, TFGPUinference,
                 dynamic, robust_nframes, allow_growth, use_shelve
         """
-        processed_dir = get_dlc_processed_data_dir()
         output_dir = cls.infer_output_dir(
             {**video_recording_key, "model_name": model_name},
             relative=False,
             mkdir=True,
         )
+        
+        # Get processed_dir for relative path calculation
+        processed_dir = get_dlc_processed_data_dir()
+        if processed_dir is None or processed_dir == "":
+            # If no processed_dir, use root_dir (same logic as infer_output_dir)
+            root_dirs = get_dlc_root_data_dir()
+            if not root_dirs:
+                raise ValueError(
+                    "DLC_ROOT_DATA_DIR is not configured. "
+                    "Please set DLC_ROOT_DATA_DIR environment variable or configure it in dj_local_conf.json"
+                )
+            video_filepath = find_full_path(
+                root_dirs,
+                (VideoRecording.File & {**video_recording_key}).fetch("file_path", limit=1)[0],
+            )
+            video_filepath = Path(video_filepath).resolve()
+            video_parent = video_filepath.parent
+            processed_dir = None
+            for root in root_dirs:
+                root_path = Path(root).resolve()
+                if video_parent == root_path:
+                    processed_dir = root_path
+                    break
+            if processed_dir is None:
+                root_dir_result = find_root_directory(root_dirs, video_filepath.parent)
+                if root_dir_result is None:
+                    raise ValueError(
+                        f"Could not determine root directory for video file: {video_filepath}"
+                    )
+                processed_dir = Path(root_dir_result).resolve()
+        else:
+            processed_dir = Path(processed_dir)
+        
+        # Ensure processed_dir is not None before using it
+        if processed_dir is None:
+            raise ValueError(
+                "Could not determine processed data directory. "
+                "Please configure DLC_PROCESSED_DATA_DIR or ensure DLC_ROOT_DATA_DIR is set correctly."
+        )
 
         if task_mode is None:
-            try:
-                _ = dlc_reader.PoseEstimation(output_dir)
-            except FileNotFoundError:
-                task_mode = "trigger"
-            else:
-                task_mode = "load"
+            # Check if results exist by looking for result files directly (more reliable)
+            output_path = Path(output_dir)
+            results_exist = False
+            if output_path.exists():
+                # Check for result files (H5, pickle, or JSON)
+                h5_files = list(output_path.glob("*.h5"))
+                pickle_files = list(output_path.glob("*.pickle"))
+                json_files = list(output_path.glob("*.json"))
+                if h5_files or pickle_files or json_files:
+                    results_exist = True
+                    logger.info(
+                        f"Found existing results in {output_dir}: "
+                        f"{len(h5_files)} H5, {len(pickle_files)} pickle, {len(json_files)} JSON files"
+                    )
+            
+            # Also try the reader as a fallback
+            if not results_exist:
+                try:
+                    _ = dlc_reader.PoseEstimation(output_dir)
+                    results_exist = True
+                    logger.info(f"Found existing results via dlc_reader in {output_dir}")
+                except (FileNotFoundError, Exception) as e:
+                    logger.debug(f"No results found via dlc_reader in {output_dir}: {e}")
+            
+            task_mode = "load" if results_exist else "trigger"
+            logger.info(f"Auto-detected task_mode='{task_mode}' for {video_recording_key} (output_dir: {output_dir})")
 
         cls.insert1(
             {
@@ -920,7 +1105,8 @@ class PoseEstimationTask(dj.Manual):
                 "pose_estimation_output_dir": output_dir.relative_to(
                     processed_dir
                 ).as_posix(),
-            }
+            },
+            skip_duplicates=True,
         )
 
     insert_estimation_task = generate
@@ -939,6 +1125,23 @@ class PoseEstimation(dj.Computed):
     -> PoseEstimationTask
     ---
     pose_estimation_time: datetime  # time of generation of this set of DLC results
+    """
+
+    class Individual(dj.Part):
+        """Individuals/animals tracked in this pose estimation.
+        
+        For single-animal data, this table will be empty.
+        For multi-animal data, each individual is tracked separately.
+        
+        Attributes:
+            PoseEstimation (foreign key): Pose Estimation key.
+            individual_id (varchar): Individual/animal identifier (e.g., 'animal0', 'animal1').
+        """
+        
+        definition = """
+        -> master
+        ---
+        individual_id : varchar(32)  # Individual/animal identifier (e.g., 'animal0', 'animal1')
     """
 
     class BodyPartPosition(dj.Part):
@@ -962,6 +1165,26 @@ class PoseEstimation(dj.Computed):
         y_pos       : longblob
         z_pos=null  : longblob
         likelihood  : longblob
+        """
+    
+    class IndividualMapping(dj.Part):
+        """Maps body part positions to individuals for multi-animal tracking.
+        
+        For single-animal data, this table will be empty.
+        For multi-animal data, links BodyPartPosition entries to individuals.
+        Note: In multi-animal data, each individual has separate position data,
+        so we encode the individual in a unique identifier.
+        
+        Attributes:
+            PoseEstimation (foreign key): Pose Estimation key.
+            body_part (varchar): Body part name (from BodyPartPosition, via Model.BodyPart).
+            individual_id (varchar): Individual identifier (must match Individual.individual_id).
+        """
+        
+        definition = """
+        -> master
+        body_part: varchar(32)  # Body part name (must match BodyPartPosition.body_part)
+        individual_id: varchar(32)  # Individual identifier (must match Individual.individual_id)
         """
 
     @classmethod
@@ -1001,14 +1224,11 @@ class PoseEstimation(dj.Computed):
             )
 
         default_params = pm.get("default_params") or {}
-        # Merge: explicit inference_params override defaults
         merged_params = {**default_params, **(inference_params or {})}
 
-        # Get optional fields if they exist in the table
         backbone_model_name = pm.get("backbone_model_name") or None
         detector_name = pm.get("detector_name") or None
 
-        # Ensure output_dir exists and is a string for DLC
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         destfolder_str = str(output_dir)
@@ -1017,30 +1237,68 @@ class PoseEstimation(dj.Computed):
         if hasattr(deeplabcut, "video_inference_superanimal"):
             inference_func = deeplabcut.video_inference_superanimal
             sig = inspect.signature(inference_func)
+            param_names = list(sig.parameters.keys())
 
-            # Base kwargs from merged_params, filtered by supported args
             kwargs = {
                 k: v
                 for k, v in merged_params.items()
                 if k in sig.parameters
             }
 
-            # Map known optional fields if accepted by the function
-            if "model_name" in sig.parameters and backbone_model_name:
-                kwargs.setdefault("model_name", backbone_model_name)
-            if "detector_name" in sig.parameters and detector_name:
-                kwargs.setdefault("detector_name", detector_name)
-            if "destfolder" in sig.parameters:
+            # Set dest_folder (note: DLC 3.x uses dest_folder, not destfolder)
+            if "dest_folder" in sig.parameters:
+                kwargs.setdefault("dest_folder", destfolder_str)
+            elif "destfolder" in sig.parameters:
                 kwargs.setdefault("destfolder", destfolder_str)
 
-            # Call: video_inference_superanimal(video_list, superanimal_name, **kwargs)
-            return inference_func(
+            # DLC 3.x signature: video_inference_superanimal(videos, superanimal_name, model_name, ...)
+            # model_name is required, so we need to provide it
+            if not backbone_model_name:
+                # If no backbone_model_name in metadata, use a default or raise error
+                logger.warning(
+                    f"No backbone_model_name found for pretrained model '{pretrained_model_name}'. "
+                    "Using default 'superanimal' model name."
+                )
+                backbone_model_name = "superanimal"
+
+            # Set detector_name if available
+            if detector_name and "detector_name" in sig.parameters:
+                kwargs.setdefault("detector_name", detector_name)
+
+            logger.info(
+                f"Running video_inference_superanimal with "
+                f"superanimal_name={pretrained_model_name}, "
+                f"model_name={backbone_model_name}, "
+                f"{len(video_filepaths)} videos, "
+                f"dest_folder={destfolder_str}, "
+                f"kwargs={kwargs}"
+            )
+            
+            # Verify output directory exists and is unique
+            if not Path(destfolder_str).exists():
+                logger.warning(f"Output directory does not exist, creating: {destfolder_str}")
+                Path(destfolder_str).mkdir(parents=True, exist_ok=True)
+            logger.info(f"Output will be saved to: {destfolder_str}")
+
+            # Call with correct signature: videos, superanimal_name, model_name, **kwargs
+            result = inference_func(
                 video_filepaths,
-                pretrained_model_name,
+                pretrained_model_name,  # superanimal_name (positional, required)
+                backbone_model_name,    # model_name (positional, required)
                 **kwargs,
             )
 
-        # --- Fallback: generic video_inference API, if present ---
+            # Verify files were saved to the correct location
+            output_path = Path(destfolder_str)
+            if output_path.exists():
+                saved_files = list(output_path.glob("*.h5")) + list(output_path.glob("*.pickle"))
+                logger.info(f"Saved {len(saved_files)} result file(s) to {destfolder_str}")
+            else:
+                logger.warning(f"Output directory {destfolder_str} does not exist after inference!")
+            
+            return result
+
+        # --- Fallback: our own generic video_inference API, if present ---
         if hasattr(deeplabcut, "video_inference"):
             inference_func = deeplabcut.video_inference
             sig = inspect.signature(inference_func)
@@ -1051,7 +1309,6 @@ class PoseEstimation(dj.Computed):
                 if k in sig.parameters
             }
 
-            # Try to inject known fields if supported
             if "model_name" in sig.parameters and backbone_model_name:
                 kwargs.setdefault("model_name", backbone_model_name)
             if "detector_name" in sig.parameters and detector_name:
@@ -1059,17 +1316,19 @@ class PoseEstimation(dj.Computed):
             if "destfolder" in sig.parameters:
                 kwargs.setdefault("destfolder", destfolder_str)
 
-            # Some versions may expect (videos, model_name, ...) or similar;
-            # we always pass video_filepaths as first arg and rely on kwargs for the rest.
+            logger.info(
+                f"Running video_inference (fallback) with pretrained_model_name={pretrained_model_name}, "
+                f"{len(video_filepaths)} videos, kwargs={kwargs}"
+            )
+
             return inference_func(
                 video_filepaths,
                 **kwargs,
             )
 
-        # --- No compatible API found ---
         raise NotImplementedError(
             "No compatible pretrained inference function found in the installed DeepLabCut. "
-            "Expected `video_inference_superanimal` or `video_inference`."
+            "Expected `video_inference_superanimal` or a compatible `video_inference` wrapper."
         )
 
     @classmethod
@@ -1197,13 +1456,22 @@ class PoseEstimation(dj.Computed):
             else:
                 raise e
 
-        # Trigger PoseEstimation
+        # Trigger PoseEstimation only if in "trigger" mode
+        # If results already exist, task_mode should be "load" to avoid re-running inference
         if task_mode == "trigger":
+            # Log the key being used to debug video grouping
+            logger.info(f"PoseEstimation.make() called with key: {key}")
+            logger.info(f"Output directory: {output_dir}")
+            
+            # Get videos for THIS specific recording only
             video_relpaths = list((VideoRecording.File & key).fetch("file_path"))
+            logger.info(f"Found {len(video_relpaths)} video file(s) for key {key}: {video_relpaths}")
+            
             video_filepaths = [
                 find_full_path(get_dlc_root_data_dir(), fp).as_posix()
                 for fp in video_relpaths
             ]
+            logger.info(f"Resolved video filepaths: {video_filepaths}")
             pose_estimation_params = (PoseEstimationTask & key).fetch1(
                 "pose_estimation_params"
             ) or {}
@@ -1290,21 +1558,299 @@ class PoseEstimation(dj.Computed):
             "%Y-%m-%d %H:%M:%S"
         )
 
-        body_parts = [
-            {
+        # Handle different data structures (DLC 2.x vs 3.x, single vs multi-animal)
+        body_parts = []
+        
+        # Check if this is multi-animal format (keys like 'animal0', 'animal1', etc.)
+        # Single-animal format: keys are body part names (e.g., 'nose', 'tail')
+        # Multi-animal format: keys contain 'animal' or 'individual' (e.g., 'animal0_nose', 'animal0_superanimal_...')
+        data_keys = list(dlc_result.data.keys()) if dlc_result.data else []
+        is_multi_animal = any(k.startswith('animal') or k.startswith('individual') for k in data_keys)
+        
+        if is_multi_animal:
+            # Multi-animal format: each key is an animal, and each animal has body parts
+            logger.info(
+                f"Multi-animal format detected (keys: {data_keys[:5]}...). "
+                "Extracting body parts from all animals."
+            )
+            
+            # Helper function to extract base individual name (e.g., "animal0" from "animal0_superanimal_...")
+            def extract_individual_id(full_key: str) -> str:
+                """Extract base individual ID from full key name.
+                
+                Examples:
+                    "animal0_superanimal_..." -> "animal0"
+                    "animal1_model_name" -> "animal1"
+                    "individual0" -> "individual0"
+                """
+                # Try to match pattern: animal<number> or individual<number>
+                import re
+                match = re.match(r'^(animal\d+|individual\d+)', full_key)
+                if match:
+                    return match.group(1)
+                # Fallback: return first part before underscore
+                return full_key.split('_')[0] if '_' in full_key else full_key
+            
+            # The structure from reformat_rawdata() should be: "individual_bodypart" -> {x, y, likelihood}
+            # But if body parts extraction failed, keys might be just individual names
+            # Check if keys already contain body parts (format: "individual_bodypart")
+            # or if they're just individual names that need to be processed differently
+            
+            # First, check if keys already have x/y data directly (format: "individual_bodypart")
+            keys_with_xy = [k for k in data_keys if isinstance(dlc_result.data.get(k), dict) 
+                           and "x" in dlc_result.data[k] and "y" in dlc_result.data[k]]
+            
+            if keys_with_xy:
+                # Keys are already in "individual_bodypart" format with x/y data
+                logger.info(f"Found {len(keys_with_xy)} keys with direct x/y data. Processing as 'individual_bodypart' format.")
+                for full_key in keys_with_xy:
+                    key_data = dlc_result.data[full_key]
+                    if isinstance(key_data, dict) and "x" in key_data and "y" in key_data:
+                        # Extract individual and body part from key
+                        # Format: "animal0_superanimal_..._bodypart" or "animal0_bodypart"
+                        individual_id = extract_individual_id(full_key)
+                        # Try to extract body part name (usually the last meaningful part)
+                        # Remove the individual prefix and scorer/model suffix
+                        parts = full_key.split('_')
+                        # Find body part name (usually a short word at the end, not a model/scorer term)
+                        # Common body part names and model terms to exclude
+                        model_terms = {'superanimal', 'hrnet', 'fasterrcnn', 'resnet', 'fpn', 'v2', 'w32', 'w48', 'w64', 
+                                      'resnet50', 'resnet101', 'mobilenet', 'efficientnet', 'densenet', 'inception'}
+                        # Common body part names to prioritize (if found, use them)
+                        common_body_parts = {'nose', 'head', 'eye', 'ear', 'neck', 'shoulder', 'elbow', 'wrist', 'hand', 
+                                           'hip', 'knee', 'ankle', 'foot', 'toe', 'tail', 'back', 'belly', 'chest'}
+                        body_part_name = None
+                        
+                        # First, check if any part matches common body part names
+                        for part in reversed(parts):
+                            if part.lower() in common_body_parts:
+                                body_part_name = part.lower()
+                                break
+                        
+                        # If no common body part found, look for any non-model term
+                        if not body_part_name:
+                            for part in reversed(parts):
+                                if (part != individual_id and len(part) > 2 and 
+                                    part.lower() not in model_terms and 
+                                    not part.isdigit() and
+                                    not part.lower().startswith('animal') and
+                                    not part.lower().startswith('individual')):
+                                    body_part_name = part.lower()
+                                    break
+                        
+                        if body_part_name:
+                            encoded_body_part = f"{individual_id}_{body_part_name}"
+                            body_parts.append({
                 **key,
-                "body_part": k,
+                                "body_part": encoded_body_part,
+                                "frame_index": np.arange(dlc_result.nframes),
+                                "x_pos": key_data["x"],
+                                "y_pos": key_data["y"],
+                                "z_pos": key_data.get("z"),
+                                "likelihood": key_data.get("likelihood", np.ones(dlc_result.nframes)),
+                                "_individual_id": individual_id,
+                                "_clean_body_part": body_part_name,
+                            })
+                        else:
+                            logger.warning(f"Could not extract body part name from key '{full_key}'. Using key as body part name.")
+                            # Fallback: use a sanitized version of the key
+                            body_part_name = full_key.replace(f"{individual_id}_", "").replace("_", " ").title().replace(" ", "")
+                            encoded_body_part = f"{individual_id}_{body_part_name}"
+                            body_parts.append({
+                                **key,
+                                "body_part": encoded_body_part,
+                                "frame_index": np.arange(dlc_result.nframes),
+                                "x_pos": key_data["x"],
+                                "y_pos": key_data["y"],
+                                "z_pos": key_data.get("z"),
+                                "likelihood": key_data.get("likelihood", np.ones(dlc_result.nframes)),
+                                "_individual_id": individual_id,
+                                "_clean_body_part": body_part_name,
+                            })
+            else:
+                # Keys are just individual names, need to look for nested structure
+                logger.info(f"Keys appear to be individual names only. Checking for nested body part structure...")
+                for animal_key_full in data_keys:
+                    animal_data = dlc_result.data[animal_key_full]
+                    individual_id = extract_individual_id(animal_key_full)
+                    
+                    if isinstance(animal_data, dict):
+                        # Check if this dict contains body parts directly
+                        animal_dict_keys = list(animal_data.keys())
+                        logger.debug(f"Individual '{individual_id}' (key: '{animal_key_full}') has {len(animal_dict_keys)} sub-key(s): {animal_dict_keys[:10]}")
+                        
+                        for sub_key, sub_data in animal_data.items():
+                            if isinstance(sub_data, dict) and "x" in sub_data and "y" in sub_data:
+                                # sub_key is the body part name
+                                body_part_name = sub_key
+                                encoded_body_part = f"{individual_id}_{body_part_name}"
+                                body_parts.append({
+                                    **key,
+                                    "body_part": encoded_body_part,
+                                    "frame_index": np.arange(dlc_result.nframes),
+                                    "x_pos": sub_data["x"],
+                                    "y_pos": sub_data["y"],
+                                    "z_pos": sub_data.get("z"),
+                                    "likelihood": sub_data.get("likelihood", np.ones(dlc_result.nframes)),
+                                    "_individual_id": individual_id,
+                                    "_clean_body_part": body_part_name,
+                                })
+                            elif isinstance(sub_data, dict):
+                                # Nested further - sub_data might contain body parts
+                                logger.debug(f"Sub-key '{sub_key}' is a dict but doesn't have x/y. Keys: {list(sub_data.keys())[:5]}")
+                    else:
+                        logger.debug(f"Key '{animal_key_full}' data is not a dict (type: {type(animal_data)})")
+        else:
+            # Single-animal format: keys are body parts
+            for k, v in dlc_result.data.items():
+                # Check if v is a dict with expected keys
+                if isinstance(v, dict):
+                    # DLC 2.x format: dict with 'x', 'y', 'likelihood' keys
+                    if "x" in v and "y" in v:
+                        body_parts.append({
+                            **key,
+                            "body_part": k,  # Single-animal format
+                            # No individual_id - will be NULL (single-animal)
                 "frame_index": np.arange(dlc_result.nframes),
                 "x_pos": v["x"],
                 "y_pos": v["y"],
                 "z_pos": v.get("z"),
-                "likelihood": v["likelihood"],
-            }
-            for k, v in dlc_result.data.items()
-        ]
+                            "likelihood": v.get("likelihood", np.ones(dlc_result.nframes)),  # Default to 1.0 if missing
+                        })
+                    else:
+                        logger.warning(
+                            f"Body part '{k}' data structure unexpected. Keys: {list(v.keys())}. "
+                            "Skipping this body part."
+                        )
+                else:
+                    logger.warning(
+                        f"Body part '{k}' data is not a dict (type: {type(v)}). Skipping."
+                    )
+        
+        if len(body_parts) == 0:
+            # Instead of raising an error, log a warning and skip this recording
+            logger.error(
+                f"No valid body part data found in results for key {key}. "
+                f"Data structure: {data_keys}. "
+                f"First item structure: {type(list(dlc_result.data.values())[0]) if dlc_result.data else 'N/A'}. "
+                "Skipping this recording and continuing with next."
+            )
+            # Return early without inserting - this will skip this key
+            return
 
+        # Extract unique body part names, clean names, and individuals from the results
+        unique_body_parts_encoded = set()  # Encoded names like "animal0_nose"
+        unique_body_parts_clean = set()  # Clean names like "nose"
+        unique_individuals = set()
+        individual_mappings = []  # Store mappings for IndividualMapping table
+        
+        for bp in body_parts:
+            encoded_name = bp["body_part"]
+            unique_body_parts_encoded.add(encoded_name)
+            
+            # Extract individual and clean body part name
+            individual_id = bp.pop("_individual_id", None)
+            clean_body_part = bp.pop("_clean_body_part", None)
+            
+            if individual_id:
+                unique_individuals.add(individual_id)
+                if clean_body_part:
+                    unique_body_parts_clean.add(clean_body_part)
+                    # Store mapping for IndividualMapping table
+                    individual_mappings.append({
+                        **key,
+                        "body_part": encoded_name,  # The encoded name in BodyPartPosition
+                        "individual_id": individual_id
+                    })
+            else:
+                # Single-animal: encoded name is the clean name
+                unique_body_parts_clean.add(encoded_name)
+        
+        # Register body part names in global BodyPart table
+        # For multi-animal: register both clean names (e.g., "nose") and encoded names (e.g., "animal0_nose")
+        # For single-animal: register clean names only (encoded = clean)
+        model_name = key["model_name"]
+        
+        # Register clean body part names
+        for clean_body_part in unique_body_parts_clean:
+            if not (BodyPart & {"body_part": clean_body_part}):
+                BodyPart.insert1(
+                    {"body_part": clean_body_part, "body_part_description": ""},
+                    skip_duplicates=True
+                )
+                logger.info(f"Registered new body part: {clean_body_part}")
+        
+        # Register encoded body part names (for multi-animal support)
+        # These are different from clean names and need to be registered separately
+        for encoded_body_part in unique_body_parts_encoded:
+            # Only register if it's different from clean names (multi-animal case)
+            if encoded_body_part not in unique_body_parts_clean:
+                if not (BodyPart & {"body_part": encoded_body_part}):
+                    BodyPart.insert1(
+                        {"body_part": encoded_body_part, "body_part_description": ""},
+                        skip_duplicates=True
+                    )
+                    logger.debug(f"Registered encoded body part: {encoded_body_part}")
+        
+        # Link body parts to model in Model.BodyPart
+        # Use encoded names for multi-animal, clean names for single-animal
+        for encoded_body_part in unique_body_parts_encoded:
+            if not (Model.BodyPart & {"model_name": model_name, "body_part": encoded_body_part}):
+                Model.BodyPart.insert1(
+                    {"model_name": model_name, "body_part": encoded_body_part},
+                    skip_duplicates=True
+                )
+                logger.debug(f"Linked body part {encoded_body_part} to model {model_name}")
+
+        # Insert master row FIRST (required before inserting into Part tables)
         self.insert1({**key, "pose_estimation_time": creation_time})
+        
+        # Now insert into Part tables (they require the master row to exist)
         self.BodyPartPosition.insert(body_parts)
+        
+        # Register individuals (for multi-animal data) - must be after master row is inserted
+        if unique_individuals:
+            individuals_to_insert = [
+                {**key, "individual_id": ind_id}
+                for ind_id in unique_individuals
+            ]
+            self.Individual.insert(individuals_to_insert, skip_duplicates=True)
+            logger.info(f"Registered {len(unique_individuals)} individual(s): {sorted(unique_individuals)}")
+        
+        # Insert individual mappings if this is multi-animal data
+        if individual_mappings:
+            for mapping in individual_mappings:
+                # IndividualMapping needs: master key (PoseEstimation) + body_part + Individual key
+                # PoseEstimation key: subject, session_datetime, recording_id, model_name
+                # body_part: from BodyPartPosition (via Model.BodyPart)
+                # Individual key: subject, session_datetime, recording_id, model_name, individual_id
+                mapping_key = {
+                    **key,  # subject, session_datetime, recording_id, model_name (from master)
+                    "body_part": mapping["body_part"],  # from BodyPartPosition
+                    "individual_id": mapping["individual_id"]  # from Individual
+                }
+                
+                # Verify both BodyPartPosition and Individual exist
+                bp_key = {**key, "body_part": mapping["body_part"]}
+                ind_key = {**key, "individual_id": mapping["individual_id"]}
+                
+                bp_exists = bool(self.BodyPartPosition & bp_key)
+                ind_exists = bool(self.Individual & ind_key)
+                
+                if bp_exists and ind_exists:
+                    try:
+                        self.IndividualMapping.insert1(
+                            mapping_key,
+                            skip_duplicates=True
+                        )
+                        logger.debug(f"Created mapping: {mapping_key}")
+                    except Exception as e:
+                        logger.warning(f"Could not insert mapping for {mapping_key}: {e}")
+                else:
+                    logger.debug(
+                        f"Could not create mapping: bp_key={bp_key} (exists: {bp_exists}), "
+                        f"ind_key={ind_key} (exists: {ind_exists})"
+                    )
 
     @classmethod
     def get_trajectory(cls, key: dict, body_parts: list = "all") -> pd.DataFrame:
