@@ -794,8 +794,8 @@ def main():
                             pipeline.model.PoseEstimationTask.update1(
                                 {**task_key, "task_mode": "load"}
                             )
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(f"Failed to set 'load' mode for recording {rec_key.get('recording_id', rec_key)}: {e}")
 
     # Verify all tasks use the correct pretrained model before inference
     status.step("Verifying model configuration")
