@@ -23,6 +23,39 @@ logger = dj.logger
 
 _linking_module = None
 
+# Apply dlclibrary bug patch early at module import
+def _apply_dlclibrary_patch_early():
+    """Apply dlclibrary ModelZoo bug patch at module import time."""
+    try:
+        import dlclibrary.dlcmodelzoo.modelzoo_download as modelzoo_download
+        if hasattr(modelzoo_download, '_handle_downloaded_file'):
+            original_handle = modelzoo_download._handle_downloaded_file
+            
+            def patched_handle_downloaded_file(file_name, target_dir, rename_mapping):
+                """Patched version that handles rename_mapping being a string."""
+                # Fix: If rename_mapping is a string, convert to dict or use empty dict
+                if isinstance(rename_mapping, str):
+                    rename_mapping = {}
+                elif rename_mapping is None:
+                    rename_mapping = {}
+                
+                # Call original function with fixed rename_mapping
+                return original_handle(file_name, target_dir, rename_mapping)
+            
+            # Apply the patch
+            modelzoo_download._handle_downloaded_file = patched_handle_downloaded_file
+            logger.debug("Applied dlclibrary ModelZoo bug patch at module import")
+    except (ImportError, AttributeError):
+        # dlclibrary not available yet, will be patched later if needed
+        pass
+
+# Try to apply patch early (will be applied again in _do_pretrained_inference if needed)
+try:
+    _apply_dlclibrary_patch_early()
+except Exception:
+    # Silently fail - patch will be applied later when needed
+    pass
+
 
 def activate(
     model_schema_name: str,
@@ -958,27 +991,94 @@ class PoseEstimationTask(dj.Manual):
                 "Please set DLC_ROOT_DATA_DIR environment variable or configure it in dj_local_conf.json"
             )
         
-        video_filepath = find_full_path(
-            root_dirs,
-            (VideoRecording.File & key).fetch("file_path", limit=1)[0],
-        )
+        # Get the stored file path from the database
+        stored_file_path = (VideoRecording.File & key).fetch("file_path", limit=1)[0]
+        
+        try:
+            video_filepath = find_full_path(root_dirs, stored_file_path)
+        except FileNotFoundError as e:
+            # Provide more helpful error message with diagnostic information
+            error_msg = (
+                f"Could not find video file: {stored_file_path}\n"
+                f"Searched in root directories: {root_dirs}\n"
+            )
+            # Check if any files exist in the root directories
+            for root in root_dirs:
+                root_path = Path(root)
+                if root_path.exists():
+                    video_files = list(root_path.glob("*.mp4")) + list(root_path.glob("*.avi")) + list(root_path.glob("*.mov"))
+                    if video_files:
+                        error_msg += f"\nFound {len(video_files)} video file(s) in {root}:\n"
+                        for vf in video_files[:5]:  # Show first 5
+                            error_msg += f"  - {vf.name}\n"
+                        if len(video_files) > 5:
+                            error_msg += f"  ... and {len(video_files) - 5} more\n"
+                    else:
+                        error_msg += f"\nNo video files found in {root}\n"
+                else:
+                    error_msg += f"\nRoot directory does not exist: {root}\n"
+            
+            # Check if the stored path is absolute and exists
+            stored_path = Path(stored_file_path)
+            if stored_path.is_absolute() and stored_path.exists():
+                # File exists at absolute path but not under any root directory
+                # Use it directly as a fallback
+                logger.warning(
+                    f"Video file {stored_file_path} exists at absolute path but is not under any configured root directory. "
+                    f"Using absolute path directly."
+                )
+                video_filepath = stored_path
+            else:
+                # Check if the stored path is absolute
+                if stored_path.is_absolute():
+                    error_msg += (
+                        f"\nNote: Stored path is absolute: {stored_file_path}\n"
+                        "If the file exists at this absolute path, it may not be under any configured root directory.\n"
+                    )
+                    if stored_path.exists():
+                        error_msg += f"The file exists at this absolute path, but it's not under any root directory.\n"
+                
+                raise FileNotFoundError(error_msg) from e
         
         # Ensure video_filepath is an absolute Path
         video_filepath = Path(video_filepath).resolve()
         
-        # Handle case where video is directly in root directory
-        video_parent = video_filepath.parent
+        # Find the root directory that contains this video file
         root_dir = None
-        # Check if parent is one of the root directories
+        video_parent = video_filepath.parent
+        
+        # First, check if the video file itself is directly in a root directory
         for root in root_dirs:
             root_path = Path(root).resolve()
-            if video_parent == root_path:
+            if video_filepath.parent == root_path:
                 root_dir = root_path
                 break
         
-        # If not found, use find_root_directory (for nested paths)
+        # If not found, check if video file is in a subdirectory of a root directory
         if root_dir is None:
-            root_dir = Path(find_root_directory(root_dirs, video_filepath.parent)).resolve()
+            for root in root_dirs:
+                root_path = Path(root).resolve()
+                try:
+                    # Check if video_filepath is under this root
+                    video_filepath.relative_to(root_path)
+                    root_dir = root_path
+                    break
+                except ValueError:
+                    # video_filepath is not under this root, continue
+                    continue
+        
+        # If still not found, try find_root_directory on the parent directory
+        if root_dir is None:
+            try:
+                root_dir = Path(find_root_directory(root_dirs, video_filepath.parent)).resolve()
+            except FileNotFoundError:
+                # Last resort: if video is not under any root, use the first root directory
+                # This handles edge cases where the video path might be absolute but outside roots
+                logger.warning(
+                    f"Video file {video_filepath} is not under any configured root directory. "
+                    f"Using first root directory as fallback: {root_dirs[0]}"
+                )
+                root_dir = Path(root_dirs[0]).resolve()
         recording_key = VideoRecording & key
         device = "-".join(
             str(v)
@@ -989,9 +1089,21 @@ class PoseEstimationTask(dj.Manual):
         else:  # if processed not provided, default to where video is
             processed_dir = root_dir
 
+        # Calculate relative path from root_dir to video's parent directory
+        try:
+            video_relative_path = video_filepath.parent.relative_to(root_dir)
+        except ValueError:
+            # Video is not under root_dir (edge case - should be rare)
+            # Use video's parent directory name as the relative path
+            logger.warning(
+                f"Video {video_filepath} is not under root directory {root_dir}. "
+                f"Using parent directory name as relative path."
+            )
+            video_relative_path = Path(video_filepath.parent.name)
+
         output_dir = (
             processed_dir
-            / video_filepath.parent.relative_to(root_dir)
+            / video_relative_path
             / (
                 f'device_{device}_recording_{key["recording_id"]}_model_'
                 + key["model_name"].replace(" ", "-")
@@ -1187,6 +1299,42 @@ class PoseEstimation(dj.Computed):
         individual_id: varchar(32)  # Individual identifier (must match Individual.individual_id)
         """
 
+    @staticmethod
+    def _patch_dlclibrary_modelzoo_bug():
+        """Monkey patch to fix dlclibrary ModelZoo download bug.
+        
+        The bug: In dlclibrary.dlcmodelzoo.modelzoo_download._handle_downloaded_file,
+        rename_mapping is sometimes a string instead of a dict, causing AttributeError.
+        
+        This patch ensures rename_mapping is always treated as a dict.
+        """
+        try:
+            import dlclibrary.dlcmodelzoo.modelzoo_download as modelzoo_download
+            original_handle = modelzoo_download._handle_downloaded_file
+            
+            def patched_handle_downloaded_file(file_name, target_dir, rename_mapping):
+                """Patched version that handles rename_mapping being a string."""
+                # Fix: If rename_mapping is a string, convert to dict or use empty dict
+                if isinstance(rename_mapping, str):
+                    logger.warning(
+                        f"dlclibrary bug: rename_mapping is a string '{rename_mapping}' instead of dict. "
+                        "Using empty dict as fallback."
+                    )
+                    rename_mapping = {}
+                elif rename_mapping is None:
+                    rename_mapping = {}
+                
+                # Call original function with fixed rename_mapping
+                return original_handle(file_name, target_dir, rename_mapping)
+            
+            # Apply the patch
+            modelzoo_download._handle_downloaded_file = patched_handle_downloaded_file
+            logger.debug("Applied dlclibrary ModelZoo bug patch")
+            return True
+        except (ImportError, AttributeError) as e:
+            logger.debug(f"Could not patch dlclibrary (may not be needed): {e}")
+            return False
+
     @classmethod
     def _do_pretrained_inference(
         cls,
@@ -1213,6 +1361,9 @@ class PoseEstimation(dj.Computed):
         """
         import inspect
         import deeplabcut
+        
+        # Apply monkey patch to fix dlclibrary bug before inference
+        cls._patch_dlclibrary_modelzoo_bug()
 
         # --- Fetch pretrained model metadata from lookup ---
         try:
@@ -1281,12 +1432,36 @@ class PoseEstimation(dj.Computed):
             logger.info(f"Output will be saved to: {destfolder_str}")
 
             # Call with correct signature: videos, superanimal_name, model_name, **kwargs
-            result = inference_func(
-                video_filepaths,
-                pretrained_model_name,  # superanimal_name (positional, required)
-                backbone_model_name,    # model_name (positional, required)
-                **kwargs,
-            )
+            try:
+                result = inference_func(
+                    video_filepaths,
+                    pretrained_model_name,  # superanimal_name (positional, required)
+                    backbone_model_name,    # model_name (positional, required)
+                    **kwargs,
+                )
+            except ValueError as e:
+                error_msg = str(e)
+                if "need at least one array to stack" in error_msg or "at least one array" in error_msg.lower():
+                    # No animals detected in the video
+                    logger.warning(
+                        f"No animals detected in video(s): {video_filepaths}. "
+                        "This can happen if: "
+                        "1) The detector threshold is too high (try lowering bbox_threshold), "
+                        "2) The animals are too small or not visible, "
+                        "3) The video quality is poor, or "
+                        "4) The model is not suitable for this video type."
+                    )
+                    logger.info(
+                        "No animals detected. The pipeline will skip this recording gracefully. "
+                        "No pose estimation data will be inserted for this video."
+                    )
+                    
+                    # Return None to indicate no detections
+                    # Downstream code will check for result files and skip if none exist
+                    return None
+                else:
+                    # Different ValueError, re-raise it
+                    raise
 
             # Verify files were saved to the correct location
             output_path = Path(destfolder_str)
@@ -1331,6 +1506,202 @@ class PoseEstimation(dj.Computed):
             "Expected `video_inference_superanimal` or a compatible `video_inference` wrapper."
         )
 
+    @staticmethod
+    def _sanitize_pytorch_config_yaml(project_path: Path, dlc_config: dict, dlc_model_: dict):
+        """Sanitize pytorch_config.yaml files by removing ruamel.yaml-specific tags.
+        
+        DeepLabCut's training process creates pytorch_config.yaml files with ruamel.yaml
+        round-trip mode tags that can't be read by the safe YAML loader. This function
+        finds and sanitizes these files by reading with ruamel.yaml and rewriting with
+        a safe YAML writer.
+        
+        Args:
+            project_path: Full path to the directory containing the trained model.
+            dlc_config: DeepLabCut config dictionary.
+            dlc_model_: Model record dictionary.
+        """
+        def _convert_to_plain_python(obj):
+            """Recursively convert ruamel.yaml objects to plain Python types."""
+            from ruamel.yaml.comments import CommentedMap, CommentedSeq
+            if isinstance(obj, CommentedMap):
+                return {k: _convert_to_plain_python(v) for k, v in obj.items()}
+            elif isinstance(obj, CommentedSeq):
+                return [_convert_to_plain_python(item) for item in obj]
+            elif isinstance(obj, dict):
+                return {k: _convert_to_plain_python(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_convert_to_plain_python(item) for item in obj]
+            else:
+                return obj
+        
+        try:
+            from deeplabcut.utils.auxiliaryfunctions import get_model_folder
+        except ImportError:
+            try:
+                from deeplabcut.utils.auxiliaryfunctions import GetModelFolder as get_model_folder
+            except ImportError:
+                logger.warning("Could not import get_model_folder, skipping pytorch_config.yaml sanitization")
+                return
+        
+        # Find the model training folder
+        try:
+            model_folder = get_model_folder(
+                trainFraction=dlc_config.get("TrainingFraction", [0.95])[dlc_model_.get("trainingsetindex", 0)],
+                shuffle=dlc_model_.get("shuffle", 1),
+                cfg=dlc_config,
+                modelprefix=dlc_model_.get("model_prefix", ""),
+            )
+            model_train_folder = project_path / model_folder / "train"
+        except Exception as e:
+            logger.warning(f"Could not determine model folder: {e}. Searching for pytorch_config.yaml files...")
+            model_train_folder = None
+        
+        # Search for pytorch_config.yaml files in common locations
+        search_paths = []
+        if model_train_folder and model_train_folder.exists():
+            search_paths.append(model_train_folder / "pytorch_config.yaml")
+        
+        # Also search in dlc-models-pytorch directories
+        dlc_models_pytorch = project_path / "dlc-models-pytorch"
+        if dlc_models_pytorch.exists():
+            for iteration_dir in dlc_models_pytorch.glob("iteration-*"):
+                for model_dir in iteration_dir.glob("*"):
+                    train_dir = model_dir / "train"
+                    if train_dir.exists():
+                        search_paths.append(train_dir / "pytorch_config.yaml")
+        
+        # Sanitize each found pytorch_config.yaml file
+        for config_path in search_paths:
+            if not config_path.exists():
+                continue
+            
+            try:
+                # First, check if file can be read by DLC's read_config_as_dict
+                # If it can, and doesn't have ruamel tags, skip sanitization
+                try:
+                    from deeplabcut.core import config as config_utils
+                    test_read = config_utils.read_config_as_dict(str(config_path))
+                    if test_read is not None and "method" in test_read:
+                        # File is already readable by DLC, check if it has ruamel tags
+                        with open(config_path, "r") as f:
+                            content = f.read()
+                        if "!!python/object/new:ruamel.yaml" not in content:
+                            logger.debug(f"pytorch_config.yaml is already valid, skipping sanitization: {config_path}")
+                            continue
+                except (ImportError, Exception):
+                    # Can't verify with DLC, proceed with sanitization
+                    pass
+                
+                # Read with ruamel.yaml round-trip mode (can handle the tags)
+                yaml_rt = YAML(typ="rt")  # round-trip mode
+                with open(config_path, "r") as f:
+                    config_data = yaml_rt.load(f)
+                
+                if config_data is None:
+                    logger.warning(f"pytorch_config.yaml is empty or invalid: {config_path}")
+                    continue
+                
+                # Convert ruamel.yaml objects to plain Python types
+                config_dict = _convert_to_plain_python(config_data)
+                
+                # Validate required keys are present and add defaults if missing
+                if not isinstance(config_dict, dict):
+                    logger.error(f"pytorch_config.yaml is not a dict after conversion: {type(config_dict)}")
+                    continue
+                
+                # Ensure required keys are present
+                if "method" not in config_dict:
+                    config_dict["method"] = "bu"  # bottom-up (default)
+                    logger.info(f"Added default method='bu' to {config_path}")
+                
+                # Ensure metadata section exists (required by DLC)
+                if "metadata" not in config_dict:
+                    config_dict["metadata"] = {}
+                    logger.info(f"Added default metadata section to {config_path}")
+                
+                # Ensure metadata has required fields
+                if "bodyparts" not in config_dict.get("metadata", {}):
+                    # Try to get from dlc_config if available
+                    bodyparts = dlc_config.get("bodyparts", ["bodypart1", "bodypart2", "bodypart3"])
+                    config_dict.setdefault("metadata", {})["bodyparts"] = bodyparts
+                    logger.info(f"Added bodyparts to metadata in {config_path}")
+                
+                # Write back with safe YAML writer
+                # Create backup before overwriting
+                backup_path = config_path.with_suffix('.yaml.backup')
+                try:
+                    import shutil
+                    shutil.copy2(config_path, backup_path)
+                except Exception:
+                    pass  # Backup is optional
+                
+                # Use DLC's own write_config if available, otherwise use ruamel.yaml safe mode
+                yaml_safe = None
+                try:
+                    from deeplabcut.utils.auxiliaryfunctions import write_config
+                    # DLC's write_config handles the format correctly
+                    write_config(str(config_path), config_dict)
+                    logger.debug(f"Used DLC's write_config to sanitize: {config_path}")
+                except (ImportError, Exception) as write_err:
+                    # Fallback to ruamel.yaml safe mode
+                    logger.debug(f"DLC's write_config not available, using ruamel.yaml safe mode: {write_err}")
+                    yaml_safe = YAML(typ="safe", pure=True)
+                    yaml_safe.default_flow_style = False
+                    
+                    with open(config_path, "w") as f:
+                        yaml_safe.dump(config_dict, f)
+                
+                # Verify the sanitized file can be read back by both our YAML loader and DLC's
+                try:
+                    # Test with our YAML loader (if we used ruamel.yaml, otherwise just test with DLC)
+                    if yaml_safe is not None:
+                        with open(config_path, "r") as f:
+                            test_load = yaml_safe.load(f)
+                        if test_load is None or "method" not in test_load:
+                            logger.error(f"Sanitized file is invalid (missing method), restoring backup: {config_path}")
+                            if backup_path.exists():
+                                shutil.copy2(backup_path, config_path)
+                            continue
+                    
+                    # Test with DLC's read_config_as_dict (the one that will actually be used)
+                    try:
+                        from deeplabcut.core import config as config_utils
+                        dlc_test = config_utils.read_config_as_dict(str(config_path))
+                        if dlc_test is None:
+                            logger.error(
+                                f"DLC's read_config_as_dict returned None for sanitized file: {config_path}. "
+                                "Restoring backup."
+                            )
+                            if backup_path.exists():
+                                shutil.copy2(backup_path, config_path)
+                            continue
+                        if "method" not in dlc_test:
+                            logger.error(
+                                f"DLC's read_config_as_dict missing 'method' key: {config_path}. "
+                                "Restoring backup."
+                            )
+                            if backup_path.exists():
+                                shutil.copy2(backup_path, config_path)
+                            continue
+                        logger.debug(f"Verified sanitized file can be read by DLC: {config_path}")
+                    except ImportError:
+                        # DLC's config_utils not available, skip DLC verification
+                        pass
+                    except Exception as e:
+                        logger.warning(f"DLC verification failed (but file structure looks OK): {e}")
+                        # Don't restore backup if our YAML loader can read it
+                        # The DLC error might be for other reasons
+                except Exception as e:
+                    logger.error(f"Sanitized file verification failed: {e}. Restoring backup.")
+                    if backup_path.exists():
+                        shutil.copy2(backup_path, config_path)
+                    continue
+                
+                logger.info(f"Sanitized pytorch_config.yaml: {config_path}")
+            except Exception as e:
+                logger.warning(f"Failed to sanitize {config_path}: {e}")
+                # Continue with other files even if one fails
+
     @classmethod
     def do_trained(
         cls,
@@ -1371,10 +1742,96 @@ class PoseEstimation(dj.Computed):
             engine = "tensorflow"
         if engine == "pytorch":
             from deeplabcut.pose_estimation_pytorch import analyze_videos
+            # Sanitize pytorch_config.yaml files before inference
+            cls._sanitize_pytorch_config_yaml(project_path, dlc_config, dlc_model_)
+            
+            # Verify pytorch_config.yaml files are readable after sanitization
+            try:
+                from deeplabcut.utils.auxiliaryfunctions import get_model_folder
+                from deeplabcut.core import config as config_utils
+            except ImportError:
+                try:
+                    from deeplabcut.utils.auxiliaryfunctions import GetModelFolder as get_model_folder
+                except ImportError:
+                    get_model_folder = None
+            
+            if get_model_folder:
+                try:
+                    model_folder = get_model_folder(
+                        trainFraction=dlc_config.get("TrainingFraction", [0.95])[dlc_model_.get("trainingsetindex", 0)],
+                        shuffle=dlc_model_.get("shuffle", 1),
+                        cfg=dlc_config,
+                        modelprefix=dlc_model_.get("model_prefix", ""),
+                    )
+                    model_train_folder = project_path / model_folder / "train"
+                    pytorch_config_path = model_train_folder / "pytorch_config.yaml"
+                    
+                    if pytorch_config_path.exists():
+                        # Test if DLC can read it
+                        try:
+                            test_cfg = config_utils.read_config_as_dict(str(pytorch_config_path))
+                            if test_cfg is None:
+                                logger.error(
+                                    f"pytorch_config.yaml exists but read_config_as_dict returned None: {pytorch_config_path}. "
+                                    "File may be corrupted. Check the file manually."
+                                )
+                            elif "method" not in test_cfg:
+                                logger.error(
+                                    f"pytorch_config.yaml missing 'method' key: {pytorch_config_path}. "
+                                    "This will cause inference to fail."
+                                )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to read pytorch_config.yaml with DLC's read_config_as_dict: {e}. "
+                                f"File: {pytorch_config_path}"
+                            )
+                except Exception as e:
+                    logger.debug(f"Could not verify pytorch_config.yaml: {e}")
         elif engine == "tensorflow":
             from deeplabcut.pose_estimation_tensorflow import analyze_videos
         else:
             raise ValueError(f"Unknown engine type {engine}")
+
+        # ---- Update pytorch_config.yaml batch_size if provided (for PyTorch) ----
+        # This must happen BEFORE we write the main config file
+        if engine == "pytorch" and analyze_video_params:
+            batch_size_override = analyze_video_params.get("batch_size") or analyze_video_params.get("batchsize")
+            
+            if batch_size_override is not None:
+                try:
+                    from deeplabcut.utils.auxiliaryfunctions import get_model_folder
+                    from deeplabcut.core import config as config_utils
+                    from deeplabcut.utils.auxiliaryfunctions import write_config
+                except ImportError:
+                    try:
+                        from deeplabcut.utils.auxiliaryfunctions import GetModelFolder as get_model_folder
+                    except ImportError:
+                        get_model_folder = None
+                        config_utils = None
+                        write_config = None
+                
+                if get_model_folder and config_utils and write_config:
+                    try:
+                        model_folder = get_model_folder(
+                            trainFraction=dlc_config.get("TrainingFraction", [0.95])[dlc_model_.get("trainingsetindex", 0)],
+                            shuffle=dlc_model_.get("shuffle", 1),
+                            cfg=dlc_config,
+                            modelprefix=dlc_model_.get("model_prefix", ""),
+                        )
+                        model_train_folder = project_path / model_folder / "train"
+                        pytorch_config_path = model_train_folder / "pytorch_config.yaml"
+                        
+                        if pytorch_config_path.exists():
+                            # Read current config
+                            pytorch_cfg = config_utils.read_config_as_dict(str(pytorch_config_path))
+                            if pytorch_cfg and pytorch_cfg.get("batch_size") != batch_size_override:
+                                # Update batch_size in config
+                                pytorch_cfg["batch_size"] = batch_size_override
+                                # Write back using DLC's write_config
+                                write_config(str(pytorch_config_path), pytorch_cfg)
+                                logger.info(f"Updated batch_size to {batch_size_override} in {pytorch_config_path}")
+                    except Exception as e:
+                        logger.debug(f"Could not update pytorch_config.yaml batch_size: {e}")
 
         # ---- Build and save DLC configuration (yaml) file ----
         dlc_project_path = Path(project_path)
@@ -1412,23 +1869,245 @@ class PoseEstimation(dj.Computed):
         else:
             config_filepath = output_dir / config_filename
 
+        # ---- Final verification of pytorch_config.yaml (for PyTorch) ----
+        # This is a final check before calling analyze_videos to ensure the file is valid
+        if engine == "pytorch":
+            try:
+                from deeplabcut.utils.auxiliaryfunctions import get_model_folder
+                from deeplabcut.core import config as config_utils
+            except ImportError:
+                try:
+                    from deeplabcut.utils.auxiliaryfunctions import GetModelFolder as get_model_folder
+                except ImportError:
+                    get_model_folder = None
+                    config_utils = None
+            
+            if get_model_folder and config_utils:
+                try:
+                    model_folder = get_model_folder(
+                        trainFraction=dlc_config.get("TrainingFraction", [0.95])[dlc_model_.get("trainingsetindex", 0)],
+                        shuffle=dlc_model_.get("shuffle", 1),
+                        cfg=dlc_config,
+                        modelprefix=dlc_model_.get("model_prefix", ""),
+                    )
+                    model_train_folder = project_path / model_folder / "train"
+                    pytorch_config_path = model_train_folder / "pytorch_config.yaml"
+                    
+                    if not pytorch_config_path.exists():
+                        # Search for pytorch_config.yaml in alternative locations
+                        search_paths = []
+                        
+                        # Check if model_train_folder exists
+                        if model_train_folder.exists():
+                            search_paths.append(model_train_folder)
+                        
+                        # Search in dlc-models-pytorch directories
+                        dlc_models_pytorch = project_path / "dlc-models-pytorch"
+                        if dlc_models_pytorch.exists():
+                            for iteration_dir in dlc_models_pytorch.glob("iteration-*"):
+                                for model_dir in iteration_dir.glob("*"):
+                                    train_dir = model_dir / "train"
+                                    if train_dir.exists():
+                                        search_paths.append(train_dir)
+                        
+                        # Also search in dlc-models directories (TensorFlow-style path)
+                        dlc_models = project_path / "dlc-models"
+                        if dlc_models.exists():
+                            for iteration_dir in dlc_models.glob("iteration-*"):
+                                for model_dir in iteration_dir.glob("*"):
+                                    train_dir = model_dir / "train"
+                                    if train_dir.exists():
+                                        search_paths.append(train_dir)
+                        
+                        # Search for the file in all candidate directories
+                        found_path = None
+                        for search_dir in search_paths:
+                            candidate = search_dir / "pytorch_config.yaml"
+                            if candidate.exists():
+                                found_path = candidate
+                                logger.info(f"Found pytorch_config.yaml at alternative location: {found_path}")
+                                pytorch_config_path = found_path
+                                break
+                        
+                        if found_path is None:
+                            # Check if this might be a TensorFlow model instead
+                            tensorflow_indicators = []
+                            if (model_train_folder / "snapshot").exists():
+                                tensorflow_indicators.append("Found 'snapshot' directory (TensorFlow indicator)")
+                            if (model_train_folder / "train").exists():
+                                # Check for TensorFlow checkpoint files
+                                train_dir = model_train_folder / "train"
+                                if any(train_dir.glob("*.ckpt*")) or any(train_dir.glob("*.index")):
+                                    tensorflow_indicators.append("Found TensorFlow checkpoint files")
+                            
+                            # Provide helpful error message with search locations
+                            error_msg = (
+                                f"pytorch_config.yaml not found at expected location: {pytorch_config_path}\n"
+                                "This file is required for PyTorch inference. It should be created during training.\n"
+                            )
+                            if tensorflow_indicators:
+                                error_msg += (
+                                    "⚠️  WARNING: This appears to be a TensorFlow model, not PyTorch!\n"
+                                    "Indicators found:\n"
+                                )
+                                for indicator in tensorflow_indicators:
+                                    error_msg += f"  - {indicator}\n"
+                                error_msg += (
+                                    "If this model was trained with TensorFlow, set engine='tensorflow' instead of 'pytorch'.\n"
+                                )
+                            if search_paths:
+                                error_msg += f"\nSearched in {len(search_paths)} alternative locations:\n"
+                                for sp in search_paths[:5]:  # Show first 5
+                                    error_msg += f"  - {sp}\n"
+                                if len(search_paths) > 5:
+                                    error_msg += f"  ... and {len(search_paths) - 5} more\n"
+                            else:
+                                error_msg += (
+                                    f"\nModel training directory not found: {model_train_folder}\n"
+                                    "This suggests the model may not have been trained yet, or training failed.\n"
+                                )
+                            error_msg += (
+                                "\nPossible solutions:\n"
+                                "1. Ensure the model was trained with PyTorch (engine='pytorch')\n"
+                                "2. Check that training completed successfully\n"
+                                "3. Verify the model path and training parameters are correct\n"
+                            )
+                            raise FileNotFoundError(error_msg)
+                    
+                    # Verify it can be read by DLC (this is the critical check)
+                    test_cfg = config_utils.read_config_as_dict(str(pytorch_config_path))
+                    if test_cfg is None:
+                        # Try to read the file directly to see what's wrong
+                        try:
+                            with open(pytorch_config_path, "r") as f:
+                                file_content = f.read()
+                            logger.error(f"pytorch_config.yaml content (first 500 chars):\n{file_content[:500]}")
+                        except Exception as read_err:
+                            logger.error(f"Could not even read file: {read_err}")
+                        
+                        # Try one more sanitization attempt
+                        logger.warning("pytorch_config.yaml cannot be read by DLC, attempting emergency sanitization...")
+                        try:
+                            cls._sanitize_pytorch_config_yaml(project_path, dlc_config, dlc_model_)
+                            test_cfg = config_utils.read_config_as_dict(str(pytorch_config_path))
+                            if test_cfg is None:
+                                raise ValueError(
+                                    f"pytorch_config.yaml still cannot be read after sanitization: {pytorch_config_path}. "
+                                    "File may be fundamentally corrupted. Check the file manually."
+                                )
+                        except Exception as sanitize_err:
+                            logger.error(f"Emergency sanitization failed: {sanitize_err}")
+                            raise ValueError(
+                                f"pytorch_config.yaml exists but cannot be read by DLC: {pytorch_config_path}. "
+                                "File may be corrupted or invalid. Check the file manually. "
+                                "This usually happens when the file has ruamel.yaml tags that DLC can't parse. "
+                                "Sanitization attempts have failed."
+                            )
+                    
+                    if "method" not in test_cfg:
+                        raise ValueError(
+                            f"pytorch_config.yaml missing required 'method' key: {pytorch_config_path}. "
+                            f"Available keys: {list(test_cfg.keys())}. "
+                            "File may be corrupted."
+                        )
+                    logger.debug(f"Verified pytorch_config.yaml is valid: {pytorch_config_path}")
+                except Exception as e:
+                    logger.error(f"pytorch_config.yaml validation failed: {e}")
+                    raise  # Always raise - don't continue with invalid config
+
         # ---- Take valid parameters for analyze_videos ----
+        # Get function signature to check what parameters it accepts
+        sig = inspect.signature(analyze_videos)
+        param_names = list(sig.parameters.keys())
+        
         kwargs = {
             k: v
             for k, v in analyze_video_params.items()
-            if k in inspect.signature(analyze_videos).parameters
+            if k in param_names
         }
+        
+        # For PyTorch, ensure batch_size is passed if available (overrides config file default)
+        # Try both 'batch_size' and 'batchsize' parameter names
+        if "batch_size" in param_names and "batch_size" in analyze_video_params:
+            kwargs["batch_size"] = analyze_video_params["batch_size"]
+        elif "batchsize" in param_names and "batchsize" in analyze_video_params:
+            kwargs["batchsize"] = analyze_video_params["batchsize"]
+        elif "batch_size" in param_names and "batchsize" in analyze_video_params:
+            # If function accepts batch_size but we have batchsize, convert it
+            kwargs["batch_size"] = analyze_video_params["batchsize"]
+        elif "batchsize" in param_names and "batch_size" in analyze_video_params:
+            # If function accepts batchsize but we have batch_size, convert it
+            kwargs["batchsize"] = analyze_video_params["batch_size"]
 
         # ---- Trigger DLC prediction job ----
-        analyze_videos(
-            config=config_filepath,
-            videos=video_filepaths,
-            shuffle=dlc_model_["shuffle"],
-            trainingsetindex=dlc_model_["trainingsetindex"],
-            destfolder=output_dir,
-            modelprefix=dlc_model_.get("model_prefix", ""),
-            **kwargs,
-        )
+        try:
+            analyze_videos(
+                config=config_filepath,
+                videos=video_filepaths,
+                shuffle=dlc_model_["shuffle"],
+                trainingsetindex=dlc_model_["trainingsetindex"],
+                destfolder=output_dir,
+                modelprefix=dlc_model_.get("model_prefix", ""),
+                **kwargs,
+            )
+        except ValueError as e:
+            error_msg = str(e)
+            # Handle case where no predictions were found (empty predictions)
+            if "Shape of passed values is" in error_msg and "indices imply" in error_msg:
+                # This happens when DLC tries to create a DataFrame but has no predictions
+                logger.warning(
+                    f"No predictions found for video(s): {video_filepaths}. "
+                    "This can happen if: "
+                    "1) No animals were detected in the video, "
+                    "2) The model confidence threshold is too high, "
+                    "3) The video quality is poor, or "
+                    "4) The model is not suitable for this video type."
+                )
+                logger.info(
+                    "No pose estimation data will be available for this video. "
+                    "The pipeline will skip this recording gracefully."
+                )
+                # Return early - no result files will be created
+                return
+            else:
+                # Different ValueError, re-raise it
+                raise
+        except TypeError as e:
+            if "'NoneType' object is not subscriptable" in str(e):
+                # This is the specific error we're trying to fix
+                logger.error(
+                    "DLC's read_config_as_dict returned None for pytorch_config.yaml. "
+                    "This usually means the file is corrupted or missing required keys."
+                )
+                if engine == "pytorch":
+                    logger.error(
+                        "For PyTorch models, ensure pytorch_config.yaml exists and contains "
+                        "at minimum: 'method' key (e.g., 'bu' or 'td')."
+                    )
+                    # Try to find and list all pytorch_config.yaml files for debugging
+                    try:
+                        from deeplabcut.utils.auxiliaryfunctions import get_model_folder
+                        model_folder = get_model_folder(
+                            trainFraction=dlc_config.get("TrainingFraction", [0.95])[dlc_model_.get("trainingsetindex", 0)],
+                            shuffle=dlc_model_.get("shuffle", 1),
+                            cfg=dlc_config,
+                            modelprefix=dlc_model_.get("model_prefix", ""),
+                        )
+                        model_train_folder = project_path / model_folder / "train"
+                        pytorch_config_path = model_train_folder / "pytorch_config.yaml"
+                        logger.error(f"Expected pytorch_config.yaml at: {pytorch_config_path}")
+                        logger.error(f"File exists: {pytorch_config_path.exists()}")
+                        if pytorch_config_path.exists():
+                            try:
+                                with open(pytorch_config_path, "r") as f:
+                                    content = f.read()
+                                logger.error(f"File size: {len(content)} bytes")
+                                logger.error(f"First 200 chars: {content[:200]}")
+                            except Exception as read_err:
+                                logger.error(f"Could not read file: {read_err}")
+                    except Exception as debug_err:
+                        logger.error(f"Could not determine expected path: {debug_err}")
+            raise
 
     def make(self, key):
         """.populate() method will launch pose estimation inference for each PoseEstimationTask"""
@@ -1506,14 +2185,43 @@ class PoseEstimation(dj.Computed):
                     output_directory=output_dir,
                 )
                 def _do_pretrained_inference():
-                    PoseEstimation._do_pretrained_inference(
+                    result = PoseEstimation._do_pretrained_inference(
                         pretrained_model_name=pretrained_model_name,
                         video_filepaths=video_filepaths,
                         output_dir=output_dir,
                         inference_params=pose_inference_params,
                     )
+                    # If result is None, it means no animals were detected
+                    # Check if result files exist, and if not, skip this recording
+                    if result is None:
+                        # Check if empty result files were created
+                        output_path = Path(output_dir)
+                        result_files = list(output_path.glob("*.h5")) + list(output_path.glob("*.pickle"))
+                        if not result_files:
+                            logger.warning(
+                                f"No animals detected and no result files created for {key}. "
+                                "Skipping this recording - no pose data will be inserted."
+                            )
+                            # Return early to skip inserting pose estimation data
+                            return None
                 
-                _do_pretrained_inference()
+                inference_result = _do_pretrained_inference()
+                # If inference returned None, check if result files were created
+                # (empty result files may have been created to indicate no detections)
+                if inference_result is None:
+                    output_path = Path(output_dir)
+                    result_files = list(output_path.glob("*.h5")) + list(output_path.glob("*.pickle"))
+                    if not result_files:
+                        logger.info(
+                            f"No animals detected in video(s) for key {key} and no result files created. "
+                            "Skipping pose estimation data insertion."
+                        )
+                        return  # Skip the rest of make() - no data to insert
+                    else:
+                        logger.info(
+                            f"No animals detected but empty result files exist. "
+                            "Will attempt to read them (may contain NaN values)."
+                        )
             else:
                 # Original trained model path
                 # Triggering dlc for pose estimation required:
@@ -1553,7 +2261,32 @@ class PoseEstimation(dj.Computed):
 
                 _do_trained_inference()
 
-        dlc_result = dlc_reader.PoseEstimation(output_dir)
+        # Check if result files exist before trying to read them (use rglob to match dlc_reader behavior)
+        output_path = Path(output_dir)
+        result_files = list(output_path.rglob("*.h5")) + list(output_path.rglob("*.pickle"))
+        if not result_files:
+            logger.warning(
+                f"No result files found in {output_dir} for key {key}. "
+                "This may indicate that no animals were detected or inference failed. "
+                "Skipping pose estimation data insertion."
+            )
+            return  # Skip the rest of make() - no data to insert
+        
+        # Try to initialize DLC result reader, handle FileNotFoundError gracefully
+        try:
+            dlc_result = dlc_reader.PoseEstimation(output_dir)
+        except FileNotFoundError as e:
+            error_msg = str(e)
+            if "No DLC output file (.h5) found" in error_msg or ".h5" in error_msg or "No meta file" in error_msg:
+                logger.warning(
+                    f"No DLC result files found in {output_dir} for key {key}. "
+                    "This likely means no animals were detected during inference. "
+                    "Skipping pose estimation data insertion."
+                )
+                return  # Skip the rest of make() - no data to insert
+            else:
+                # Different FileNotFoundError, re-raise it
+                raise
         creation_time = datetime.fromtimestamp(dlc_result.creation_time).strftime(
             "%Y-%m-%d %H:%M:%S"
         )

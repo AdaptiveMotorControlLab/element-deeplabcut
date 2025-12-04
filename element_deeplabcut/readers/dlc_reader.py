@@ -572,11 +572,43 @@ def read_yaml(fullpath: str, filename: str = "*") -> tuple:
         list(fullpath.glob(f"{filename}.y*ml"))
     )
 
-    assert (  # If more than 1 and not DJ-saved,
-        len(yml_paths) == 1
-    ), f"Found more yaml files than expected: {len(yml_paths)}\n{fullpath}"
+    if not yml_paths:
+        raise FileNotFoundError(f"No YAML files found in: {fullpath}")
 
-    return yml_paths[0], read_config(yml_paths[0])
+    # If multiple YAML files are present, choose the most appropriate one:
+    # 1. Prefer explicit config.yaml/config.yml
+    # 2. Then prefer dj_dlc_config*.yaml (most recent by modification time)
+    # 3. Otherwise fall back to the first in the sorted list with a warning
+    chosen_path = None
+
+    # Prefer standard DLC config filenames
+    for name in ("config.yaml", "config.yml"):
+        for p in yml_paths:
+            if p.name == name:
+                chosen_path = p
+                break
+        if chosen_path:
+            break
+
+    # Prefer dj_dlc_config* if no explicit config.* was found
+    if chosen_path is None:
+        dj_configs = [p for p in yml_paths if p.name.startswith("dj_dlc_config")]
+        if dj_configs:
+            # Choose the most recently modified dj_dlc_config*
+            chosen_path = max(dj_configs, key=lambda p: p.stat().st_mtime)
+
+    # Fallback: first match, but emit a warning for debugging
+    if chosen_path is None:
+        chosen_path = yml_paths[0]
+        if len(yml_paths) > 1:
+            logger.warning(
+                "Multiple YAML files found in %s, using %s. Candidates: %s",
+                fullpath,
+                chosen_path,
+                [p.name for p in yml_paths],
+            )
+
+    return chosen_path, read_config(chosen_path)
 
 
 def save_yaml(
