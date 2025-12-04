@@ -842,8 +842,8 @@ class Model(dj.Manual):
                     logger.info("\t{}: {}".format(k, v))
                 else:
                     logger.info("\t-- Template/Contents of config.yaml --")
-                    for k, v in model_dict["config_template"].items():
-                        logger.info("\t\t{}: {}".format(k, v))
+                    for ck, cv in model_dict["config_template"].items():
+                        logger.info("\t\t{}: {}".format(ck, cv))
 
         if (
             prompt
