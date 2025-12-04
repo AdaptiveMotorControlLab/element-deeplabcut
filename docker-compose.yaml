@@ -39,6 +39,9 @@ services:
       - DATABASE_PREFIX=${DATABASE_PREFIX:-}
       - DLC_ROOT_DATA_DIR=${DLC_ROOT_DATA_DIR:-/app/test_videos}
       - PYTHONUNBUFFERED=1
+      # GPU support - set NVIDIA_VISIBLE_DEVICES to enable GPU access
+      # Can be overridden via -e flag in docker compose run
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
     volumes:
       # Mount data directory (can be customized via DLC_DATA_DIR env var)
       # Default: ./test_videos (for tests) or ./data (for general use)
@@ -49,6 +52,15 @@ services:
       - .:/app
     networks:
       - element_network
+    # GPU support for docker compose v2
+    # This requires nvidia-container-toolkit to be installed on the host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     # Default command - interactive bash (entrypoint is /bin/bash)
     # Example: docker compose run client -c "python test_trained_inference.py"
     command: ["-i"]

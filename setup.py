@@ -25,24 +25,27 @@ setup(
     packages=find_packages(exclude=["contrib", "docs", "tests*"]),
     scripts=[],
     install_requires=[
-        "datajoint>=0.14.0",
+        "datajoint==0.14.0",
         "graphviz",
-        "pydot",
-        "ipykernel",
-        "ipywidgets",
+        "pydot==1.4.2",
+        "ipykernel==6.29.0",
+        "ipywidgets==8.1.1",
     ],
     extras_require={
         "dlc_default": [
-            "deeplabcut[superanimal]==3.0.0rc13"
+            "deeplabcut[superanimal]==3.0.0rc13",
+            "dlclibrary>=0.1.0,<0.2.0",  # Pin to avoid ModelZoo download bug
         ],
         "dlc_apple_mchips": [
             "tensorflow-macos==2.12.0",
             "tensorflow-metal",
             "tables==3.7.0",
             "deeplabcut[superanimal]==3.0.0rc13",
+            "dlclibrary>=0.1.0,<0.2.0",  # Pin to avoid ModelZoo download bug
         ],
         "dlc_gui": [
-            "deeplabcut[gui]==3.0.0rc13"
+            "deeplabcut[gui]==3.0.0rc13",
+            "dlclibrary>=0.1.0,<0.2.0",  # Pin to avoid ModelZoo download bug
         ],
         "elements": [
             "element-lab @ git+https://github.com/datajoint/element-lab.git",
@@ -50,6 +53,10 @@ setup(
             "element-session @ git+https://github.com/datajoint/element-session.git",
             "element-interface @ git+https://github.com/datajoint/element-interface.git",
         ],
-        "tests": ["pytest", "pytest-cov", "shutils"],
+        "tests": [
+            "pytest==7.4.4",
+            "pytest-cov==4.1.0",
+            "shutils",
+        ],
     },
 )

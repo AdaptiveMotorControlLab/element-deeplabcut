@@ -1,0 +1,30 @@
+# Pinned requirements for element-deeplabcut
+# Generated for reproducibility - use with: pip install -r requirements.txt
+
+# Core dependencies
+datajoint==0.14.0
+pydot==1.4.2
+ipykernel==6.29.0
+ipywidgets==8.1.1
+opencv-python==4.8.1.78
+
+# Testing
+pytest==7.4.4
+pytest-cov==4.1.0
+
+# DeepLabCut - pinned version
+deeplabcut[superanimal]==3.0.0rc13
+deeplabcut[gui]==3.0.0rc13
+
+# dlclibrary - constrained to avoid ModelZoo download bug
+# The bug: rename_mapping is sometimes a string instead of dict
+# Constraining version helps, but we also have a runtime monkey patch
+dlclibrary>=0.1.0,<0.2.0
+
+# Element dependencies (from git)
+# Note: These are installed via setup.py extras, but listed here for reference
+# element-lab @ git+https://github.com/datajoint/element-lab.git
+# element-animal @ git+https://github.com/datajoint/element-animal.git
+# element-session @ git+https://github.com/datajoint/element-session.git
+# element-interface @ git+https://github.com/datajoint/element-interface.git
+
