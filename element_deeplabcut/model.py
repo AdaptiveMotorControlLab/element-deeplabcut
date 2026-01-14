@@ -15,7 +15,40 @@ import pandas as pd
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone
-from element_interface.utils import find_full_path, find_root_directory, memoized_result
+from element_interface.utils import find_full_path, find_root_directory
+try:
+    from element_interface.utils import memoized_result
+except ImportError:
+    # Fallback if memoized_result not available (e.g., older element-interface versions)
+    def memoized_result(*args, **kwargs):
+        """
+        Fallback stand-in for :func:`element_interface.utils.memoized_result`.
+
+        This implementation returns a no-op decorator that leaves the wrapped
+        function unchanged and does not perform any caching. Any positional or
+        keyword arguments passed to :func:`memoized_result` are ignored, which
+        means that configuration options supported by the real implementation
+        (e.g., cache keys, TTLs) will have no effect when this fallback is
+        used. Functions decorated with this fallback therefore execute
+        normally but without memoization.
+        """
+        # Warn if the fallback is used with arguments, since they will be ignored.
+        if args or kwargs:
+            try:
+                logger.warning(
+                    "memoized_result fallback is in use; all arguments %r %r are "
+                    "ignored and no caching will be performed.",
+                    args,
+                    kwargs,
+                )
+            except NameError:
+                # logger may not yet be defined during module import; silently ignore.
+                pass
+
+        def decorator(func):
+            # Return function unchanged if memoization is not available.
+            return func
+        return decorator
 from .readers import dlc_reader
 
 schema = dj.schema()

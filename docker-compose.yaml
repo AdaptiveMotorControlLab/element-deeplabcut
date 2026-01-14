@@ -62,7 +62,7 @@ services:
               count: all
               capabilities: [gpu]
     # Default command - interactive bash (entrypoint is /bin/bash)
-    # Example: docker compose run client -c "python test_trained_inference.py"
+    # Example: docker compose run client -c "python test_model_train_run.py"
     command: ["-i"]
     stdin_open: true
     tty: true

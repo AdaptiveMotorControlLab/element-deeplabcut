@@ -51,7 +51,7 @@ See [Workflows](./workflows.md) for details on the differences between these mod
 
 ## Test Scripts
 
-### `test_trained_inference.py` - Trained Model Workflow
+### `test_model_train_run.py` - Trained Model Workflow
 
 This script tests the **trained model workflow** (see [Workflows](./workflows.md#trained-models-workflow) for details):
 
@@ -67,26 +67,26 @@ This script tests the **trained model workflow** (see [Workflows](./workflows.md
 
 ```console
 # Full workflow: create project, train, infer
-python test_trained_inference.py
+python test_model_train_run.py
 
 # Use existing trained model (skip training)
-python test_trained_inference.py --skip-training
+python test_model_train_run.py --skip-training
 
 # Only train, don't infer
-python test_trained_inference.py --skip-inference
+python test_model_train_run.py --skip-inference
 
 # Custom model name
-python test_trained_inference.py --model-name my_model
+python test_model_train_run.py --model-name my_model
 ```
 
 **In Docker:**
 
 ```console
-docker compose run --rm client python test_trained_inference.py
+docker compose run --rm client python test_model_train_run.py
 # Or: make test-trained
 ```
 
-### `test_video_inference.py` - Pretrained Model Inference
+### `test_pretrained_model_run.py` - Pretrained Model Inference
 
 This script tests the **pretrained model workflow** (see [Workflows](./workflows.md#pretrained-models-workflow) for details):
 
@@ -99,16 +99,16 @@ This script tests the **pretrained model workflow** (see [Workflows](./workflows
 
 ```console
 # Test with SuperAnimal quadruped model
-python test_video_inference.py superanimal_quadruped
+python test_pretrained_model_run.py superanimal_quadruped
 
 # Test with SuperAnimal topviewmouse model
-python test_video_inference.py superanimal_topviewmouse
+python test_pretrained_model_run.py superanimal_topviewmouse
 ```
 
 **In Docker:**
 
 ```console
-docker compose run --rm client python test_video_inference.py superanimal_quadruped
+docker compose run --rm client python test_pretrained_model_run.py superanimal_quadruped
 # Or: make test-pretrained
 ```
 
@@ -116,7 +116,7 @@ docker compose run --rm client python test_video_inference.py superanimal_quadru
 
 ### Functional/Integration Tests (These Scripts)
 
-`test_trained_inference.py` and `test_video_inference.py` are **functional/integration tests**:
+`test_model_train_run.py` and `test_pretrained_model_run.py` are **functional/integration tests**:
 
 - ✅ Test the **entire end-to-end workflow** (project creation → training → inference → database storage)
 - ✅ Test **integration between components** (DataJoint, DeepLabCut, file system)
@@ -226,10 +226,10 @@ The test scripts automatically detect Docker environment and adjust paths:
 conda activate element-deeplabcut
 
 # Run trained model test
-python test_trained_inference.py
+python test_model_train_run.py
 
 # Run pretrained model test
-python test_video_inference.py superanimal_quadruped
+python test_pretrained_model_run.py superanimal_quadruped
 ```
 
 ### Docker Execution
@@ -239,8 +239,8 @@ python test_video_inference.py superanimal_quadruped
 docker compose up -d
 
 # Run tests
-docker compose run --rm client python test_trained_inference.py
-docker compose run --rm client python test_video_inference.py superanimal_quadruped
+docker compose run --rm client python test_model_train_run.py
+docker compose run --rm client python test_pretrained_model_run.py superanimal_quadruped
 
 # Or use Makefile
 make test-trained
@@ -330,7 +330,7 @@ jobs:
       - name: Start services
         run: docker compose up -d
       - name: Run tests
-        run: docker compose run --rm client python test_trained_inference.py
+        run: docker compose run --rm client python test_model_train_run.py
 ```
 
 ## Next Steps
@@ -338,5 +338,5 @@ jobs:
 - See [Docker Setup](./docker.md) for Docker configuration
 - See [Tutorials](./tutorials/) for workflow examples
 - See [Concepts](./concepts.md) for architecture details
-- See [Environment Setup](../tests/ENVIRONMENT_SETUP.md) for detailed setup instructions
+- See [Conda Environment Setup](../CONDA_ENV_SETUP.md) for detailed setup instructions
 
