@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.10  # DeepLabCut 3.x requires Python 3.10+ (uses modern type hints)
+  - python=3.10  # DeepLabCut 3.x requires Python 3.10+ (uses PEP 604 union types: X | Y, and other 3.10+ typing features)
   - pip
   - graphviz
   - ffmpeg

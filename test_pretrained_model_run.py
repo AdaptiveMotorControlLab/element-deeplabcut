@@ -802,7 +802,7 @@ def main():
     for rec_key in recording_keys:
         task_key = {**rec_key, "model_name": model_name}
         if len(pipeline.model.PoseEstimationTask & task_key):
-            task = (pipeline.model.PoseEstimationTask & task_key).fetch1()
+            (pipeline.model.PoseEstimationTask & task_key).fetch1()
             # Verify the model is actually a pretrained model
             model_record = (model.Model & {"model_name": model_name}).fetch1()
             config_template = model_record.get("config_template", {})
@@ -1270,7 +1270,7 @@ def main():
                 ).fetch1()
 
                 x_pos = bp_data["x_pos"]
-                y_pos = bp_data["y_pos"]
+
                 likelihood = bp_data["likelihood"]
 
                 status.sub(

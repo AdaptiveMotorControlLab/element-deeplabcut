@@ -39,7 +39,7 @@ Database Configuration:
 """
 import os
 import sys
-import importlib.util
+
 import logging
 import argparse
 from pathlib import Path
@@ -296,7 +296,7 @@ def create_mock_labeled_data(
 
     for img_path in img_files:
         row = []
-        for bp in bodyparts:
+        for _ in bodyparts:
             x = np.random.uniform(50, img_width - 50)
             y = np.random.uniform(50, img_height - 50)
             likelihood = np.random.uniform(0.8, 1.0)
@@ -1032,7 +1032,7 @@ def main():
                         import yaml
 
                         with open(config_file, "r") as f:
-                            cfg = yaml.safe_load(f)
+                            pass
 
                         labeled_data_dir = Path(config_file).parent / "labeled-data"
                         csv_files = list(labeled_data_dir.rglob("CollectedData_*.csv"))
@@ -2066,7 +2066,7 @@ def main():
                     ).fetch1()
 
                     x_pos = bp_data["x_pos"]
-                    y_pos = bp_data["y_pos"]
+
                     likelihood = bp_data["likelihood"]
 
                     status.sub(

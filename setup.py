@@ -21,7 +21,7 @@ setup(
     license="MIT",
     url=f'https://github.com/datajoint/{pkg_name.replace("_", "-")}',
     keywords="neuroscience behavior deeplabcut pose-estimation science datajoint",
-    python_requires=">=3.10",  # DeepLabCut 3.x requires Python 3.10+
+    python_requires=">=3.10",  # Package tested with Python 3.10+ to match DLC 3.0.0rc13 at time of writing
     packages=find_packages(exclude=["contrib", "docs", "tests*"]),
     scripts=[],
     install_requires=[
