@@ -12,10 +12,16 @@ Element DeepLabCut runs DeepLabCut which uses image recognition machine learning
 to generate animal position estimates from consumer grade video equipment.  The Element
 is composed of two schemas for storing data and running analysis:
 
-- `train` - Manages model training
+- `train` - Manages model training (for trained models only)
   
 - `model` - Manages models and launches pose estimation
 
+The Element supports two workflow modes:
+
+- **Trained Models**: Custom models you train yourself using your own labeled data
+- **Pretrained Models**: Ready-to-use models from the DLC Model Zoo (e.g., SuperAnimal models)
+
+Visit the [Workflows page](./workflows.md) to learn about both modes and when to use each.
 Visit the [Concepts page](./concepts.md) for more information on pose estimation and
 Element DeepLabCut.  To get started with building your data pipeline visit the
 [Tutorials page](./tutorials/).

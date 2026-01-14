@@ -1,0 +1,32 @@
+name: element-deeplabcut
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10  # DeepLabCut 3.x requires Python 3.10+ (uses PEP 604 union types: X | Y, and other 3.10+ typing features)
+  - pip
+  - graphviz
+  - ffmpeg
+  - pip:
+    # Core dependencies - pinned versions for reproducibility
+    - datajoint==0.14.0
+    - pydot==1.4.2
+    - ipykernel==6.29.0
+    - ipywidgets==8.1.1
+    - pytest==7.4.4
+    - pytest-cov==4.1.0
+    - opencv-python==4.8.1.78  # Required for video metadata extraction
+    # Element dependencies - pinned to specific commits for reproducibility
+    - element-lab @ git+https://github.com/datajoint/element-lab.git
+    - element-animal @ git+https://github.com/datajoint/element-animal.git
+    - element-session @ git+https://github.com/datajoint/element-session.git
+    - element-interface @ git+https://github.com/datajoint/element-interface.git
+    # DeepLabCut - pinned version to avoid compatibility issues
+    - deeplabcut[superanimal]==3.0.0rc13  # For pretrained SuperAnimal models and inference (DLC 3.x)
+    # DeepLabCut GUI support (optional - needed for labeling / refine GUI)
+    - deeplabcut[gui]==3.0.0rc13
+    # dlclibrary - pin to avoid ModelZoo download bug
+    # Note: This is a dependency of deeplabcut[superanimal], but we pin it explicitly
+    # to ensure we get a compatible version that doesn't have the rename_mapping bug
+    - dlclibrary>=0.1.0,<0.2.0  # Constrain version to avoid known bugs
+
