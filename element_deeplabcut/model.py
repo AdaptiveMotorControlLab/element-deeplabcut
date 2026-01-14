@@ -15,7 +15,15 @@ import pandas as pd
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timezone
-from element_interface.utils import find_full_path, find_root_directory, memoized_result
+from element_interface.utils import find_full_path, find_root_directory
+try:
+    from element_interface.utils import memoized_result
+except ImportError:
+    # Fallback if memoized_result not available (e.g., older element-interface versions)
+    def memoized_result(*args, **kwargs):
+        def decorator(func):
+            return func  # Return function unchanged if memoization not available
+        return decorator
 from .readers import dlc_reader
 
 schema = dj.schema()

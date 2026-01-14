@@ -5,7 +5,7 @@ Usage:
     1. Configure database (see below)
     2. Put your video file(s) in ./test_videos/ directory
        - In Docker: videos should be in ./data/ directory (mounted to /app/data)
-    3. Run: python test_video_inference.py [model_name]
+    3. Run: python test_pretrained_model_run.py [model_name]
        - In Docker: make test-pretrained
 
     Available models:
@@ -13,9 +13,9 @@ Usage:
         - superanimal_topviewmouse: For top-view mouse pose estimation
 
     Examples:
-        python test_video_inference.py
-        python test_video_inference.py superanimal_quadruped
-        python test_video_inference.py superanimal_topviewmouse
+        python test_pretrained_model_run.py
+        python test_pretrained_model_run.py superanimal_quadruped
+        python test_pretrained_model_run.py superanimal_topviewmouse
 
 Or set DLC_ROOT_DATA_DIR environment variable to point to your video directory.
 
@@ -280,7 +280,7 @@ def main():
     # 3. Insert pretrained model instance
     status.step("Inserting pretrained model instance")
     # Use a model name that includes the pretrained model name for clarity
-    model_name = f"test_video_inference_{pretrained_model_name.replace('superanimal_', '')}"
+    model_name = f"test_pretrained_model_run_{pretrained_model_name.replace('superanimal_', '')}"
 
     # Check if model already exists and verify it's a pretrained model
     if len(model.Model & {"model_name": model_name}):
@@ -1294,9 +1294,9 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python test_video_inference.py
-  python test_video_inference.py superanimal_quadruped
-  python test_video_inference.py superanimal_topviewmouse --gpu 0
+  python test_pretrained_model_run.py
+  python test_pretrained_model_run.py superanimal_quadruped
+  python test_pretrained_model_run.py superanimal_topviewmouse --gpu 0
         """,
     )
     parser.add_argument(

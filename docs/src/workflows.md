@@ -60,7 +60,7 @@ deeplabcut.extract_frames(config_path, mode='automatic', algo='kmeans', numframe
 # Label frames (opens GUI)
 deeplabcut.label_frames(config_path)
 
-# Or use programmatic labeling (see test_trained_inference.py for examples)
+# Or use programmatic labeling (see test_model_train_run.py for examples)
 ```
 
 #### 3. Create Training Dataset
@@ -298,7 +298,7 @@ You can use both modes in the same pipeline:
 
 ### Complete Trained Model Workflow
 
-See `test_trained_inference.py` for a complete example of the trained model workflow, including:
+See `test_model_train_run.py` for a complete example of the trained model workflow, including:
 
 - Project creation
 - Mock labeled data generation
@@ -309,7 +309,7 @@ See `test_trained_inference.py` for a complete example of the trained model work
 
 ### Complete Pretrained Model Workflow
 
-See `test_video_inference.py` for a complete example of the pretrained model workflow, including:
+See `test_pretrained_model_run.py` for a complete example of the pretrained model workflow, including:
 
 - Pretrained model registration
 - Model insertion
@@ -319,8 +319,8 @@ See `test_video_inference.py` for a complete example of the pretrained model wor
 
 Both workflow modes have dedicated test scripts:
 
-- **Trained models**: `test_trained_inference.py`
-- **Pretrained models**: `test_video_inference.py`
+- **Trained models**: `test_model_train_run.py`
+- **Pretrained models**: `test_pretrained_model_run.py`
 
 See the [Testing Guide](./testing.md) for details on running these tests.
 

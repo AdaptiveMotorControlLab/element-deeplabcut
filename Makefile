@@ -49,7 +49,7 @@ test-trained:
 	@docker compose ps db > /dev/null 2>&1 || docker compose up -d db
 	@echo "Waiting for database..."
 	@sleep 3
-	docker compose run --rm client -c "python test_trained_inference.py --gpu 0 --batch-size 4"
+	docker compose run --rm client -c "python test_model_train_run.py --gpu 0 --batch-size 4"
 
 test-pretrained:
 	@echo "⚠️  Note: docker compose run doesn't support --gpus flag"
@@ -58,7 +58,7 @@ test-pretrained:
 	@docker compose ps db > /dev/null 2>&1 || docker compose up -d db
 	@echo "Waiting for database..."
 	@sleep 3
-	docker compose run --rm client -c "python test_video_inference.py superanimal_quadruped --gpu 0 --detector-batch-size 4"
+	docker compose run --rm client -c "python test_pretrained_model_run.py superanimal_quadruped --gpu 0 --detector-batch-size 4"
 
 # GPU-enabled test targets (requires nvidia-container-toolkit)
 test-trained-gpu:
@@ -81,7 +81,7 @@ test-trained-gpu:
 		$$([ -f dj_local_conf.json ] && echo "-v $$(pwd)/dj_local_conf.json:/app/dj_local_conf.json:ro") \
 		-v $$(pwd):/app \
 		$$IMAGE \
-		-c "python test_trained_inference.py --gpu 0 --batch-size 4"
+		-c "python test_model_train_run.py --gpu 0 --batch-size 4"
 
 test-pretrained-gpu:
 	@echo "🚀 Running with GPU support (requires nvidia-container-toolkit)"
@@ -103,7 +103,7 @@ test-pretrained-gpu:
 		$$([ -f dj_local_conf.json ] && echo "-v $$(pwd)/dj_local_conf.json:/app/dj_local_conf.json:ro") \
 		-v $$(pwd):/app \
 		$$IMAGE \
-		-c "python test_video_inference.py superanimal_quadruped --gpu 0 --detector-batch-size 4"
+		-c "python test_pretrained_model_run.py superanimal_quadruped --gpu 0 --detector-batch-size 4"
 
 quad-superanimal:
 	# Step 1: Create project + SuperAnimal predictions + extract frames (PyTorch engine)

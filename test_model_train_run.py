@@ -11,14 +11,14 @@ Usage:
     1. Configure database (see below)
     2. Put your video file(s) in ./test_videos/ directory (or set DLC_ROOT_DATA_DIR)
        - In Docker: videos should be in ./data/ directory (mounted to /app/data)
-    3. Run: python test_trained_inference.py
+    3. Run: python test_model_train_run.py
        - In Docker: make test-trained
 
     Examples:
-        python test_trained_inference.py  # Full workflow: create project, train, infer
-        python test_trained_inference.py --skip-training  # Use existing trained model
-        python test_trained_inference.py --skip-inference  # Only train, don't infer
-        python test_trained_inference.py --model-name my_model  # Custom model name
+        python test_model_train_run.py  # Full workflow: create project, train, infer
+        python test_model_train_run.py --skip-training  # Use existing trained model
+        python test_model_train_run.py --skip-inference  # Only train, don't infer
+        python test_model_train_run.py --model-name my_model  # Custom model name
 
 Database Configuration:
     The script will look for database configuration in this order:

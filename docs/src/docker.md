@@ -36,11 +36,11 @@ This starts:
 
 Run the functional test suite. There are two test scripts:
 
-**1. Trained Model Workflow Test** (`test_trained_inference.py`):
+**1. Trained Model Workflow Test** (`test_model_train_run.py`):
 Tests the complete trained model workflow (project creation → training → inference):
 
 ```console
-docker compose run --rm client python test_trained_inference.py
+docker compose run --rm client python test_model_train_run.py
 ```
 
 Or use the Makefile:
@@ -49,11 +49,11 @@ Or use the Makefile:
 make test-trained
 ```
 
-**2. Pretrained Model Workflow Test** (`test_video_inference.py`):
+**2. Pretrained Model Workflow Test** (`test_pretrained_model_run.py`):
 Tests pretrained model inference (SuperAnimal models):
 
 ```console
-docker compose run --rm client python test_video_inference.py superanimal_quadruped
+docker compose run --rm client python test_pretrained_model_run.py superanimal_quadruped
 ```
 
 Or use the Makefile:
@@ -167,8 +167,8 @@ The included Makefile provides convenient shortcuts:
 | `make up` | Start services in background |
 | `make down` | Stop and remove containers |
 | `make shell` | Interactive shell in container |
-| `make test-trained` | Run `test_trained_inference.py` |
-| `make test-pretrained` | Run `test_video_inference.py` |
+| `make test-trained` | Run `test_model_train_run.py` |
+| `make test-pretrained` | Run `test_pretrained_model_run.py` |
 | `make clean` | Remove containers and volumes |
 
 ## Troubleshooting

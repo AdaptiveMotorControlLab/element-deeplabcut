@@ -37,5 +37,6 @@ python -c "import datajoint as dj; print('✅ DataJoint available')"
 
 ## Next Steps
 
-1. Configure database: See `tests/ENVIRONMENT_SETUP.md`
+1. Configure database: See [docs/src/testing.md](docs/src/testing.md) for database setup
 2. Run tests: `pytest tests/ -v`
+3. See [docs/src/docker.md](docs/src/docker.md) for Docker setup
