@@ -21,6 +21,14 @@ try:
 except ImportError:
     # Fallback if memoized_result not available (e.g., older element-interface versions)
     def memoized_result(*args, **kwargs):
+        """
+        Fallback stand-in for :func:`element_interface.utils.memoized_result`.
+        When the real memoized_result decorator is not available (e.g. with
+        older versions of element-interface), this implementation returns a
+        no-op decorator that leaves the wrapped function unchanged and does
+        not perform any caching. This means that any functions decorated
+        with memoized_result will execute normally but without memoization.
+        """
         def decorator(func):
             return func  # Return function unchanged if memoization not available
         return decorator
