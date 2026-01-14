@@ -5,9 +5,6 @@ This module tests the pretrained model workflow alongside the existing trained m
 """
 
 import pytest
-from pathlib import Path
-
-
 def test_pretrained_model_registration(pipeline):
     """Test registering pretrained models in the lookup table."""
     model = pipeline["model"]
