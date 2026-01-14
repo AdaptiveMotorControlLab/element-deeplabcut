@@ -23,14 +23,31 @@ except ImportError:
     def memoized_result(*args, **kwargs):
         """
         Fallback stand-in for :func:`element_interface.utils.memoized_result`.
-        When the real memoized_result decorator is not available (e.g. with
-        older versions of element-interface), this implementation returns a
-        no-op decorator that leaves the wrapped function unchanged and does
-        not perform any caching. This means that any functions decorated
-        with memoized_result will execute normally but without memoization.
+
+        This implementation returns a no-op decorator that leaves the wrapped
+        function unchanged and does not perform any caching. Any positional or
+        keyword arguments passed to :func:`memoized_result` are ignored, which
+        means that configuration options supported by the real implementation
+        (e.g., cache keys, TTLs) will have no effect when this fallback is
+        used. Functions decorated with this fallback therefore execute
+        normally but without memoization.
         """
+        # Warn if the fallback is used with arguments, since they will be ignored.
+        if args or kwargs:
+            try:
+                logger.warning(
+                    "memoized_result fallback is in use; all arguments %r %r are "
+                    "ignored and no caching will be performed.",
+                    args,
+                    kwargs,
+                )
+            except NameError:
+                # logger may not yet be defined during module import; silently ignore.
+                pass
+
         def decorator(func):
-            return func  # Return function unchanged if memoization not available
+            # Return function unchanged if memoization is not available.
+            return func
         return decorator
 from .readers import dlc_reader
 
